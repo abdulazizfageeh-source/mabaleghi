@@ -299,14 +299,14 @@ function editPlan(pid){
     <label>تاريخ توفر المبلغ</label>
     <input name="date" type="date" required value="${date}" onchange="refreshCarrySources('${pid||''}')">
     <label>المبلغ المتوفر</label>
-    <input name="amount" type="number" min="0" step="0.01" required value="${p?.amount??''}">
+    <input name="amount" type="number" inputmode="decimal" min="0" step="0.01" required value="${p?.amount??''}">
     <label>ترحيل من خطة سابقة (اختياري)</label>
     <select name="carryFromPlanId" id="carrySource">
       <option value="">بدون ترحيل</option>
       ${sources.map(x=>`<option value="${x.id}" ${p?.carryFromPlanId===x.id?'selected':''}>${esc(x.name||dateName(planDate(x)))} — المتبقي ${money(availableForCarry(x.id,pid))}</option>`).join('')}
     </select>
     <label>المبلغ المرحّل</label>
-    <input name="carry" type="number" min="0" step="0.01" value="${p?.carry||0}">
+    <input name="carry" type="number" inputmode="decimal" min="0" step="0.01" value="${p?.carry||0}">
     <p class="note">عند اختيار مصدر للترحيل، يُخصم المبلغ من الخطة المصدر تلقائيًا ولا يتكرر في الداشبورد.</p>
     <div class="actions"><button type="submit">حفظ</button>${button('إلغاء','dismissModal(event)')}</div>
   </form>`);
@@ -358,7 +358,7 @@ function editItem(iid,pid){
     <label>اسم البند</label>
     <input name="name" required value="${esc(i?.name||'')}">
     <label>المبلغ الإجمالي</label>
-    <input name="amount" type="number" min="0.01" step="0.01" required value="${i?.amount||''}">
+    <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${i?.amount||''}">
     <h3>الدفعات المجدولة (اختياري)</h3>
     <div id="schedule">${(i?.schedule||[]).map(d=>scheduleRow(d.month,d.amount,d.id)).join('')}</div>
     ${button('+ دفعة','addSchedule()')}
@@ -370,7 +370,7 @@ function scheduleRow(month='',amount='',sid=''){
   return `<div class="two" style="margin:8px 0">
     <input type="month" class="sm" value="${month}" data-id="${sid}">
     <div style="display:flex;gap:4px">
-      <input type="number" class="sa" placeholder="المبلغ" min="0.01" step="0.01" value="${amount}">
+      <input type="number" inputmode="decimal" class="sa" placeholder="المبلغ" min="0.01" step="0.01" value="${amount}">
       <button type="button" class="danger small" onclick="this.closest('.two').remove()">×</button>
     </div>
   </div>`;
@@ -426,7 +426,7 @@ function pay(iid,preferredPlanId='',preferredInstId=''){
         ${funding.map(p=>`<option value="${p.id}" ${p.id===preferred.id?'selected':''}>${esc(planLabel(p))} — متاح ${money(planBalance(p))}</option>`).join('')}
       </select>
       <label>المبلغ المدفوع</label>
-      <input name="amount" type="number" min="0.01" step="0.01" required value="${defaultAmount}">
+      <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${defaultAmount}">
       ${i.schedule.length?`<label>الدفعة المرتبطة</label>
       <select name="installmentId">
         ${options}
