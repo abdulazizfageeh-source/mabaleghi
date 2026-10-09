@@ -209,6 +209,11 @@ function dashboard(){
   <div class="card" style="margin-top:13px">
     <h3>الأشهر في الفترة</h3>
     ${list.map(m=>`<div class="line"><span>${monthName(m)}</span><span>${money(due(m))} <small class="muted">مجدول غير مسدد</small></span></div>`).join('')}
+  </div>
+  <div class="card">
+    <h3>إعادة ضبط التطبيق</h3>
+    <p class="note">يمسح جميع خطط وبنود وسجلات سداد تطبيق مبالغي فقط، ويعيده كأنه جديد.</p>
+    <div class="actions">${button('مسح جميع بيانات مبالغي','resetApp()','danger')}</div>
   </div>`;
 }
 
@@ -483,6 +488,19 @@ function deletePlan(pid){
     db.payments=db.payments.filter(p=>!ids.includes(p.itemId));
     save();
   }
+}
+function resetApp(){
+  if(!confirm('سيتم مسح جميع بيانات مبالغي نهائيًا: الخطط والبنود وسجلات السداد. هل تريد المتابعة؟'))return;
+  if(!confirm('تأكيد أخير: لا يمكن التراجع بعد مسح البيانات.'))return;
+  localStorage.removeItem(KEY);
+  db={plans:[],items:[],payments:[]};
+  active=null;
+  tab='dashboard';
+  period='month';
+  anchor=localMonth();
+  dismissModal();
+  render();
+  alert('تمت إعادة ضبط مبالغي ومسح جميع بياناته.');
 }
 if('serviceWorker'in navigator){
   let refreshing=false;
