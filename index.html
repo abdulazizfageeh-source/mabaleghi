@@ -139,7 +139,27 @@ function due(m){
     return s+i.schedule.filter(d=>d.month===m).reduce((a,d)=>a+(bal[d.id]?.remaining??Number(d.amount||0)),0);
   },0);
 }
-function button(label,fn,cl='secondary'){return `<button class="${cl}" onclick="${fn}">${label}</button>`}
+function planLabel(p){return p?(p.name||('خطة '+dateName(planDate(p)))):''}
+function fundingPlansFor(date){
+  return [...db.plans]
+    .filter(p=>planDate(p)<=date && planBalance(p)>0.0001)
+    .sort((a,b)=>planDate(b).localeCompare(planDate(a)));
+}
+function scheduledEntriesForMonth(month,excludeOriginPlanId=''){
+  const rows=[];
+  db.items.forEach(item=>{
+    if(excludeOriginPlanId && item.planId===excludeOriginPlanId)return;
+    const bal=scheduleBalances(item);
+    item.schedule.forEach(inst=>{
+      const left=bal[inst.id]?.remaining??Number(inst.amount||0);
+      if(inst.month===month && left>0.0001){
+        rows.push({item,inst,remaining:left,originPlan:db.plans.find(p=>p.id===item.planId)});
+      }
+    });
+  });
+  return rows.sort((a,b)=>String(a.item.name).localeCompare(String(b.item.name),'ar'));
+}
+function button(label,fn,cl='secondary'){return `<button type="button" class="${cl}" onclick="${fn}">${label}</button>`}
 function go(t){tab=t;active=null;render()}
 function render(){
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b.id==='tab-'+tab));
@@ -150,12 +170,14 @@ function dashboard(){
   const months=period==='month'?1:period==='quarter'?3:period==='half'?6:12;
   const list=Array.from({length:months},(_,i)=>addMonths(anchor,i));
   const ps=db.plans.filter(p=>list.includes(planMonth(p)));
-  const entered=ps.reduce((s,p)=>s+Number(p.amount||0),0);
-  const carry=ps.reduce((s,p)=>s+Number(p.carry||0),0);
-  const paid=db.payments.filter(p=>list.includes(ym(p.date))).reduce((s,p)=>s+Number(p.amount||0),0);
-  const scheduled=list.reduce((s,m)=>s+due(m),0);
-  const balance=ps.reduce((s,p)=>s+planBalance(p),0);
-  const base=ps.reduce((s,p)=>s+planMoney(p),0);
+  const planIds=new Set(ps.map(p=>p.id));
+  const entered=ps.reduce((sum,p)=>sum+Number(p.amount||0),0);
+  const carryIn=ps.reduce((sum,p)=>sum+Number(p.carry||0),0);
+  const carryOut=ps.reduce((sum,p)=>sum+outgoingCarry(p.id),0);
+  const paidFromPlans=db.payments.filter(p=>planIds.has(p.planId)).reduce((sum,p)=>sum+Number(p.amount||0),0);
+  const scheduled=list.reduce((sum,m)=>sum+due(m),0);
+  const balance=ps.reduce((sum,p)=>sum+planBalance(p),0);
+  const usableBase=Math.max(0,entered+carryIn-carryOut);
   return `<div class="card">
     <h2>لوحة التحكم</h2>
     <label>عرض الفترة</label>
@@ -169,20 +191,22 @@ function dashboard(){
     <input type="month" value="${anchor}" onchange="anchor=this.value;render()">
   </div>
   <div class="card">
-    <div class="muted">المتبقي من خطط الفترة</div>
+    <div class="muted">المتبقي الحالي من مبالغ خطط الفترة</div>
     <div class="big ${balance<0?'neg':''}">${money(balance)}</div>
-    <div class="bar"><div style="width:${base?Math.min(100,Math.max(0,balance/base*100)):0}%"></div></div>
-    <p class="note">الترحيل بين خطتين يُخصم من الخطة المصدر ويُضاف للخطة الجديدة، لذلك لا يتكرر احتسابه في الإجمالي.</p>
+    <div class="bar"><div style="width:${usableBase?Math.min(100,Math.max(0,balance/usableBase*100)):0}%"></div></div>
+    <p class="note">المتبقي يعكس وضع الخطط الآن، بما في ذلك ما تم ترحيله منها لاحقًا وما تم سداده من مبالغها.</p>
   </div>
   <div class="grid">
-    <div class="stat"><span class="muted">المبالغ المدخلة</span><b>${money(entered)}</b></div>
-    <div class="stat"><span class="muted">ترحيل وارد</span><b>${money(carry)}</b></div>
-    <div class="stat"><span class="muted">مسدد خلال الفترة</span><b>${money(paid)}</b></div>
-    <div class="stat"><span class="muted">دفعات مجدولة غير مسددة</span><b>${money(scheduled)}</b></div>
+    <div class="stat"><span class="muted">مبالغ جديدة</span><b>${money(entered)}</b></div>
+    <div class="stat"><span class="muted">ترحيل وارد</span><b>${money(carryIn)}</b></div>
+    <div class="stat"><span class="muted">ترحيل صادر</span><b>${money(carryOut)}</b></div>
+    <div class="stat"><span class="muted">مسدد من هذه الخطط</span><b>${money(paidFromPlans)}</b></div>
+    <div class="stat"><span class="muted">دفعات مجدولة في الفترة</span><b>${money(scheduled)}</b></div>
+    <div class="stat"><span class="muted">عدد الخطط</span><b>${ps.length}</b></div>
   </div>
   <div class="card" style="margin-top:13px">
     <h3>الأشهر في الفترة</h3>
-    ${list.map(m=>`<div class="line"><span>${monthName(m)}</span><span>${money(due(m))} <small class="muted">مجدول</small></span></div>`).join('')}
+    ${list.map(m=>`<div class="line"><span>${monthName(m)}</span><span>${money(due(m))} <small class="muted">مجدول غير مسدد</small></span></div>`).join('')}
   </div>`;
 }
 
@@ -190,38 +214,51 @@ function plans(){
   const sorted=[...db.plans].sort((a,b)=>planDate(b).localeCompare(planDate(a)));
   return `<div class="card">
     <div class="line"><h2>الخطط</h2>${button('+ خطة جديدة','editPlan()','')}</div>
-    <p class="note">كل خطة مرتبطة بتاريخ توفر المبلغ، ويمكنك إنشاء أكثر من خطة في الشهر نفسه.</p>
+    <p class="note">كل خطة مرتبطة بتاريخ توفر مبلغ. ويمكن إنشاء أكثر من خطة في الشهر نفسه وترحيل الرصيد بينها.</p>
   </div>
-  ${sorted.map(p=>`<div class="card">
-    <div class="line">
-      <div><b>${esc(p.name||('خطة '+dateName(planDate(p))))}</b><div class="muted">تاريخ توفر المبلغ: ${dateName(planDate(p))}</div></div>
-      <span class="tag">${money(planBalance(p))}</span>
-    </div>
-    <div class="grid">
-      <div class="stat"><span class="muted">المتاح قبل السداد</span><b>${money(planMoney(p)-outgoingCarry(p.id))}</b></div>
-      <div class="stat"><span class="muted">المسدد من الخطة</span><b>${money(totalPaid(p))}</b></div>
-    </div>
-    ${p.carryFromPlanId?`<p class="note">يتضمن ${money(p.carry)} مرحّلة من ${esc(db.plans.find(x=>x.id===p.carryFromPlanId)?.name||'خطة سابقة')}.</p>`:''}
-    <div class="actions">
-      ${button('فتح البنود',`openPlan('${p.id}')`,'')}
-      ${button('تعديل',`editPlan('${p.id}')`)}
-      ${button('حذف',`deletePlan('${p.id}')`,'danger')}
-    </div>
-  </div>`).join('')||'<div class="card">ابدأ بإضافة أول خطة.</div>'}`;
+  ${sorted.map(p=>{
+    const monthDue=scheduledEntriesForMonth(planMonth(p)).reduce((sum,x)=>sum+x.remaining,0);
+    return `<div class="card">
+      <div class="line">
+        <div><b>${esc(planLabel(p))}</b><div class="muted">تاريخ توفر المبلغ: ${dateName(planDate(p))}</div></div>
+        <span class="tag">${money(planBalance(p))}</span>
+      </div>
+      <div class="grid">
+        <div class="stat"><span class="muted">المتاح قبل السداد</span><b>${money(planMoney(p)-outgoingCarry(p.id))}</b></div>
+        <div class="stat"><span class="muted">المسدد من الخطة</span><b>${money(totalPaid(p))}</b></div>
+      </div>
+      ${p.carryFromPlanId?`<p class="note">يتضمن ${money(p.carry)} مرحّلة من ${esc(planLabel(db.plans.find(x=>x.id===p.carryFromPlanId))||'خطة سابقة')}.</p>`:''}
+      ${monthDue>0?`<p class="note">دفعات مجدولة غير مسددة في ${monthName(planMonth(p))}: <b>${money(monthDue)}</b>.</p>`:''}
+      <div class="actions">
+        ${button('فتح البنود',`openPlan('${p.id}')`,'')}
+        ${button('تعديل',`editPlan('${p.id}')`)}
+        ${button('حذف',`deletePlan('${p.id}')`,'danger')}
+      </div>
+    </div>`;
+  }).join('')||'<div class="card">ابدأ بإضافة أول خطة.</div>'}`;
 }
 
 function items(){
   const p=active?db.plans.find(x=>x.id===active):null;
   const its=db.items.filter(i=>!p||i.planId===p.id);
+  const inherited=p?scheduledEntriesForMonth(planMonth(p),p.id):[];
   return `<div class="card">
-    <div class="line"><h2>${p?'بنود '+esc(p.name||('خطة '+dateName(planDate(p)))):'جميع البنود'}</h2>${button('+ إضافة بند',`editItem('','${p?.id||''}')`,'')}</div>
+    <div class="line"><h2>${p?'بنود '+esc(planLabel(p)):'جميع البنود'}</h2>${button('+ إضافة بند',`editItem('','${p?.id||''}')`,'')}</div>
     ${p?`<p class="muted">المتبقي من مبلغ الخطة: ${money(planBalance(p))}</p>`:''}
   </div>
+  ${p&&inherited.length?`<div class="card">
+    <h3>دفعات مجدولة من خطط سابقة — ${monthName(planMonth(p))}</h3>
+    <p class="note">هذه الدفعات مرتبطة ببنود أُنشئت في خطط أخرى، ويمكن سدادها من هذه الخطة أو من أي خطة متاحة.</p>
+    ${inherited.map(x=>`<div class="line">
+      <div><b>${esc(x.item.name)}</b><div class="muted">من ${esc(planLabel(x.originPlan)||'خطة سابقة')} · أصل الدفعة ${money(x.inst.amount)}</div></div>
+      <div style="text-align:left"><b>${money(x.remaining)}</b><div>${button('سداد',`pay('${x.item.id}','${p.id}','${x.inst.id}')`,'small')}</div></div>
+    </div>`).join('')}
+  </div>`:''}
   ${its.map(i=>{
-    const p=db.plans.find(x=>x.id===i.planId), bal=scheduleBalances(i);
+    const origin=db.plans.find(x=>x.id===i.planId), bal=scheduleBalances(i);
     return `<div class="card">
       <div class="line">
-        <div><b>${esc(i.name)}</b><div class="muted">${esc(p?(p.name||dateName(planDate(p))):'')}</div></div>
+        <div><b>${esc(i.name)}</b><div class="muted">${esc(planLabel(origin))}</div></div>
         <span class="tag">${remaining(i)===0?'مسدد':paidFor(i)>0?'جزئي':'غير مسدد'}</span>
       </div>
       <div class="grid">
@@ -230,13 +267,13 @@ function items(){
       </div>
       ${i.schedule.map(d=>`<div class="line"><span>${monthName(d.month)} <small class="muted">${money(d.amount)}</small></span><span>${money(bal[d.id]?.remaining??d.amount)} متبقٍ</span></div>`).join('')}
       <div class="actions">
-        ${button('تسجيل سداد',`pay('${i.id}')`,'')}
+        ${button('تسجيل سداد',`pay('${i.id}','${p?.id||''}')`,'')}
         ${button('تعديل',`editItem('${i.id}')`)}
         ${button('سجل السداد',`history('${i.id}')`)}
         ${button('حذف',`deleteItem('${i.id}')`,'danger')}
       </div>
     </div>`;
-  }).join('')||'<div class="card">لا توجد بنود بعد.</div>'}`;
+  }).join('')||(!p||!inherited.length?'<div class="card">لا توجد بنود بعد.</div>':'')}`;
 }
 
 function openPlan(x){active=x;tab='items';render()}
@@ -308,7 +345,7 @@ function editItem(iid,pid){
   <form id="f" onsubmit="event.preventDefault();submitItem('${iid||''}')">
     <label>الخطة</label>
     <select name="planId" required>
-      ${db.plans.sort((a,b)=>planDate(b).localeCompare(planDate(a))).map(p=>`<option value="${p.id}" ${p.id===(i?.planId||pid)?'selected':''}>${esc(p.name||dateName(planDate(p)))} — ${dateName(planDate(p))}</option>`).join('')}
+      ${[...db.plans].sort((a,b)=>planDate(b).localeCompare(planDate(a))).map(p=>`<option value="${p.id}" ${p.id===(i?.planId||pid)?'selected':''}>${esc(planLabel(p))} — ${dateName(planDate(p))}</option>`).join('')}
     </select>
     <label>اسم البند</label>
     <input name="name" required value="${esc(i?.name||'')}">
@@ -355,50 +392,73 @@ function submitItem(iid){
   close();save();
 }
 
-function pay(iid){
-  const i=db.items.find(x=>x.id===iid), left=remaining(i);
+function pay(iid,preferredPlanId='',preferredInstId=''){
+  const i=db.items.find(x=>x.id===iid);
+  if(!i)return alert('البند غير موجود');
+  const left=remaining(i);
   if(!left)return alert('البند مسدد بالكامل');
-  const p=db.plans.find(x=>x.id===i.planId), planLeft=p?planBalance(p):0;
-  if(planLeft<=0)return alert('لا يوجد رصيد متبقٍ في الخطة لهذا السداد');
   const bal=scheduleBalances(i);
   const unpaid=i.schedule.filter(d=>(bal[d.id]?.remaining??Number(d.amount||0))>0).sort((a,b)=>a.month.localeCompare(b.month));
-  const first=unpaid[0];
-  const defaultAmount=Math.min(left,planLeft,first?(bal[first.id]?.remaining??first.amount):left);
-  const options=unpaid.map(d=>`<option value="${d.id}">${monthName(d.month)} — متبقي ${money(bal[d.id]?.remaining??d.amount)}</option>`).join('');
+  const preferredInst=preferredInstId&&unpaid.find(d=>d.id===preferredInstId);
+  const first=preferredInst||unpaid[0];
+  const paymentDate=localToday();
+  const funding=fundingPlansFor(paymentDate);
+  if(!funding.length)return alert('لا توجد خطة متاحة بتاريخ اليوم وبها رصيد للسداد');
+  const preferred=funding.find(p=>p.id===preferredPlanId)||funding.find(p=>p.id===i.planId)||funding[0];
+  const instLeft=first?(bal[first.id]?.remaining??Number(first.amount||0)):left;
+  const defaultAmount=Math.min(left,planBalance(preferred),instLeft);
+  const options=unpaid.map(d=>`<option value="${d.id}" ${first?.id===d.id?'selected':''}>${monthName(d.month)} — متبقي ${money(bal[d.id]?.remaining??d.amount)}</option>`).join('');
   show(`<h2>سداد: ${esc(i.name)}</h2>
-    <p>المتبقي على البند: <b>${money(left)}</b><br><span class="muted">المتاح في الخطة: ${money(planLeft)}</span></p>
+    <p>المتبقي على البند: <b>${money(left)}</b></p>
     <form id="f" onsubmit="event.preventDefault();submitPay('${iid}')">
-      <label>المبلغ المدفوع</label>
-      <input name="amount" type="number" min="0.01" max="${Math.min(left,planLeft)}" step="0.01" required value="${defaultAmount}">
       <label>تاريخ السداد</label>
-      <input name="date" type="date" required value="${localToday()}">
+      <input name="date" type="date" required value="${paymentDate}" onchange="refreshFundingPlans('${preferred.id}')">
+      <label>السداد من أي خطة؟</label>
+      <select name="fundingPlanId" id="fundingPlan" required>
+        ${funding.map(p=>`<option value="${p.id}" ${p.id===preferred.id?'selected':''}>${esc(planLabel(p))} — متاح ${money(planBalance(p))}</option>`).join('')}
+      </select>
+      <label>المبلغ المدفوع</label>
+      <input name="amount" type="number" min="0.01" step="0.01" required value="${defaultAmount}">
       ${i.schedule.length?`<label>الدفعة المرتبطة</label>
       <select name="installmentId">
         ${options}
         <option value="">سداد عام للبند — يُوزع على أقدم دفعة غير مسددة</option>
       </select>`:'<input type="hidden" name="installmentId" value="">'}
+      <p class="note">يمكن سداد بند قديم من خطة أحدث طالما أن مبلغ الخطة متوفر في تاريخ السداد.</p>
       <div class="actions"><button>تأكيد السداد</button>${button('إلغاء','close()')}</div>
     </form>`);
 }
+function refreshFundingPlans(preferredId=''){
+  const f=document.getElementById('f'), sel=document.getElementById('fundingPlan');
+  if(!f||!sel)return;
+  const date=f.querySelector('[name="date"]').value;
+  const current=sel.value||preferredId;
+  const funding=fundingPlansFor(date);
+  sel.innerHTML=funding.map(p=>`<option value="${p.id}" ${p.id===current?'selected':''}>${esc(planLabel(p))} — متاح ${money(planBalance(p))}</option>`).join('');
+  if(!funding.length)sel.innerHTML='<option value="">لا توجد خطة متاحة بهذا التاريخ</option>';
+}
 function submitPay(iid){
-  const v=Object.fromEntries(new FormData(document.getElementById('f'))),i=db.items.find(x=>x.id===iid),p=db.plans.find(x=>x.id===i.planId);
-  const amount=Number(v.amount||0);
+  const v=Object.fromEntries(new FormData(document.getElementById('f'))), i=db.items.find(x=>x.id===iid);
+  const p=db.plans.find(x=>x.id===v.fundingPlanId), amount=Number(v.amount||0);
+  if(!i)return alert('البند غير موجود');
   if(amount<=0)return alert('أدخل مبلغًا صحيحًا');
   if(amount>remaining(i)+0.001)return alert('المبلغ يتجاوز المتبقي على البند');
-  if(!p || amount>planBalance(p)+0.001)return alert('المبلغ يتجاوز الرصيد المتبقي في الخطة');
+  if(!p)return alert('اختر خطة للسداد منها');
+  if(planDate(p)>v.date)return alert('تاريخ توفر مبلغ الخطة يأتي بعد تاريخ السداد');
+  if(amount>planBalance(p)+0.001)return alert('المبلغ يتجاوز الرصيد المتبقي في الخطة المختارة');
   if(v.installmentId){
     const left=installmentRemaining(i,v.installmentId);
     if(amount>left+0.001)return alert('المبلغ أكبر من المتبقي على الدفعة المحددة');
   }
-  db.payments.push({id:id(),itemId:iid,planId:i.planId,amount,date:v.date,installmentId:v.installmentId||''});
+  db.payments.push({id:id(),itemId:iid,planId:p.id,amount,date:v.date,installmentId:v.installmentId||''});
   close();save();
 }
 function history(iid){
   const i=db.items.find(x=>x.id===iid), ps=db.payments.filter(p=>p.itemId===iid).sort((a,b)=>b.date.localeCompare(a.date));
   show(`<h2>سجل السداد</h2>
     ${ps.map(p=>{
-      const d=i.schedule.find(x=>x.id===p.installmentId);
-      return `<div class="line"><span>${dateName(p.date)} — ${money(p.amount)}${d?`<div class="muted">دفعة ${monthName(d.month)}</div>`:'<div class="muted">سداد عام</div>'}</span>${button('حذف',`removePay('${p.id}')`,'danger small')}</div>`;
+      const d=i.schedule.find(x=>x.id===p.installmentId), source=db.plans.find(x=>x.id===p.planId);
+      return `<div class="line"><span>${dateName(p.date)} — ${money(p.amount)}${d?`<div class="muted">دفعة ${monthName(d.month)}</div>`:'<div class="muted">سداد عام</div>'}<div class="muted">من ${esc(planLabel(source)||'خطة محذوفة')}</div></span>${button('حذف',`removePay('${p.id}')`,'danger small')}</div>`;
     }).join('')||'لا توجد مدفوعات'}
     <div class="actions">${button('إغلاق','close()')}</div>`);
 }
@@ -412,7 +472,8 @@ function deleteItem(iid){
 }
 function deletePlan(pid){
   if(db.plans.some(p=>p.carryFromPlanId===pid && Number(p.carry||0)>0))return alert('لا يمكن حذف هذه الخطة لأنها مصدر لمبلغ مرحّل إلى خطة أخرى');
-  if(confirm('حذف الخطة وبنودها وجميع سجلات سدادها؟')){
+  if(db.payments.some(p=>p.planId===pid))return alert('لا يمكن حذف هذه الخطة لأن هناك عمليات سداد خرجت من مبلغها. احذف سجلات السداد المرتبطة أولًا');
+  if(confirm('حذف الخطة وبنودها؟ سيتم أيضًا حذف أي سجلات سداد مرتبطة بهذه البنود من خطط أخرى.')){
     const ids=db.items.filter(i=>i.planId===pid).map(i=>i.id);
     db.plans=db.plans.filter(p=>p.id!==pid);
     db.items=db.items.filter(i=>i.planId!==pid);
