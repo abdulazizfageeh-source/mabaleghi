@@ -84,7 +84,7 @@ function load(){
 }
 let db=load(),tab='dashboard',period='month',anchor=localToday().slice(0,7),active=null;
 function save(){localStorage.setItem(KEY,JSON.stringify(db));render()}
-function id(){return crypto.randomUUID?crypto.randomUUID():String(Date.now()+Math.random())}
+function id(){return (typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():'mab-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)}
 function money(n){return (Number(n)||0).toLocaleString('en-US',{maximumFractionDigits:2})+' ر.س'}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function ym(s){return String(s||'').slice(0,7)}
@@ -114,16 +114,72 @@ function availableForCarry(sourceId,targetId=''){
   return v;
 }
 function remaining(i){return Math.max(0,Number(i.amount||0)-paidFor(i))}
+function isCard(i){return i?.type==='card'}
+function cents(v){return Math.round((Number(v)||0)*100)/100}
+function cardInstallmentId(item,month){return `card_${item.id}_${month.replace('-','')}`}
+function monthEndDay(month){const [year,m]=month.split('-').map(Number);return new Date(year,m,0).getDate()}
+/*
+  For cards the first minimum is a fixed statement amount. Later minimums are
+  5% of projected outstanding balances. A projection assumes each scheduled
+  minimum is paid, unless a larger actual payment has been recorded that month.
+  It does not include new purchases, bank fees or interest. Actual payment
+  status is never guessed: it comes only from db.payments.
+*/
+function itemSchedule(item){
+  if(!isCard(item))return item.schedule||[];
+  const first=(item.schedule||[])[0];
+  if(!first||!first.month)return [];
+  let balance=cents(item.amount),start=first.month;
+  const byPaidMonth={};
+  for(const p of db.payments.filter(p=>p.itemId===item.id)){
+    const month=ym(p.date);
+    byPaidMonth[month]=cents((byPaidMonth[month]||0)+Number(p.amount||0));
+  }
+  const months=[];
+  const dueDay=first.date?Number(first.date.slice(-2)):0;
+  const rate=Number(item.cardRate??5);
+  for(let k=0;k<60&&balance>=0.01;k++){
+    const month=addMonths(start,k);
+    const due=k===0?cents(Math.min(balance,first.amount)):cents(Math.min(balance,balance*rate/100));
+    if(due<0.01)break;
+    const date=dueDay?`${month}-${String(Math.min(dueDay,monthEndDay(month))).padStart(2,'0')}`:'';
+    months.push(k===0?{...first,amount:due,date}:{id:cardInstallmentId(item,month),month,date,label:'الحد الأدنى المتوقع — 5% من الرصيد المتبقي',amount:due});
+    const actuallyPaid=byPaidMonth[month]||0;
+    balance=cents(Math.max(0,balance-Math.max(due,actuallyPaid)));
+  }
+  return months;
+}
+function cardScheduleBalances(item){
+  const rows=itemSchedule(item);
+  if(remaining(item)<0.005){
+    return Object.fromEntries(rows.map(d=>[d.id,{paid:d.amount,remaining:0}]));
+  }
+  const actualForRow={};
+  const validIds=new Set(rows.map(d=>d.id));
+  for(const p of db.payments.filter(p=>p.itemId===item.id)){
+    const rowId=p.installmentId && validIds.has(p.installmentId)
+      ? p.installmentId
+      : (ym(p.date)===rows[0]?.month?rows[0]?.id:cardInstallmentId(item,ym(p.date)));
+    if(rowId)actualForRow[rowId]=cents((actualForRow[rowId]||0)+Number(p.amount||0));
+  }
+  const result={};
+  for(const d of rows){
+    const paid=Math.min(d.amount,actualForRow[d.id]||0);
+    result[d.id]={paid,remaining:cents(Math.max(0,d.amount-paid))};
+  }
+  return result;
+}
 function instSortDate(d){return d.date||d.month+'-31'}
 function instLabel(d){return (d.label?esc(d.label)+' — ':'')+(d.date?dateName(d.date):monthName(d.month))}
 function scheduleBalances(item){
+  if(isCard(item))return cardScheduleBalances(item);
   const explicit={};
   let general=0;
   db.payments.filter(p=>p.itemId===item.id).forEach(p=>{
     if(p.installmentId) explicit[p.installmentId]=(explicit[p.installmentId]||0)+Number(p.amount||0);
     else general+=Number(p.amount||0);
   });
-  const rows=item.schedule.map((d,idx)=>({...d,_idx:idx})).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b))||a._idx-b._idx);
+  const rows=itemSchedule(item).map((d,idx)=>({...d,_idx:idx})).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b))||a._idx-b._idx);
   const out={};
   rows.forEach(d=>{
     const linked=Math.min(Number(d.amount||0),explicit[d.id]||0);
@@ -139,7 +195,7 @@ function installmentRemaining(item,instId){return scheduleBalances(item)[instId]
 function due(m){
   return db.items.reduce((s,i)=>{
     const bal=scheduleBalances(i);
-    return s+i.schedule.filter(d=>d.month===m).reduce((a,d)=>a+(bal[d.id]?.remaining??Number(d.amount||0)),0);
+    return s+itemSchedule(i).filter(d=>d.month===m).reduce((a,d)=>a+(bal[d.id]?.remaining??Number(d.amount||0)),0);
   },0);
 }
 function planLabel(p){return p?(p.name||('خطة '+dateName(planDate(p)))):''}
@@ -155,7 +211,7 @@ function scheduledEntriesForMonth(month,excludeOriginPlanId='',notAfterDate=''){
     const originPlan=db.plans.find(p=>p.id===item.planId);
     if(notAfterDate && originPlan && planDate(originPlan)>notAfterDate)return;
     const bal=scheduleBalances(item);
-    item.schedule.forEach(inst=>{
+    itemSchedule(item).forEach(inst=>{
       const left=bal[inst.id]?.remaining??Number(inst.amount||0);
       if(inst.month===month && left>0.0001){
         rows.push({item,inst,remaining:left,originPlan});
@@ -275,9 +331,10 @@ function items(){
   </div>`:''}
   ${its.map(i=>{
     const origin=db.plans.find(x=>x.id===i.planId), bal=scheduleBalances(i);
+    const displaySchedule=itemSchedule(i).slice(0,isCard(i)?13:500);
     return `<div class="card">
       <div class="line">
-        <div><b>${esc(i.name)}</b><div class="muted">${esc(planLabel(origin))}</div></div>
+        <div><b>${esc(i.name)}</b><div class="muted">${esc(planLabel(origin))}${isCard(i)?' · بطاقة ائتمانية (5% من المتبقي)':''}</div></div>
         <span class="tag">${remaining(i)===0?'مسدد':paidFor(i)>0?'جزئي':'غير مسدد'}</span>
       </div>
       ${i.note?`<p class="note">${esc(i.note)}</p>`:''}
@@ -285,7 +342,8 @@ function items(){
         <div class="stat"><span class="muted">قيمة البند</span><b>${money(i.amount)}</b></div>
         <div class="stat"><span class="muted">المتبقي</span><b>${money(remaining(i))}</b></div>
       </div>
-      ${[...i.schedule].sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b))).map(d=>`<div class="line"><span>${instLabel(d)} <small class="muted">${money(d.amount)}</small></span><span>${money(bal[d.id]?.remaining??d.amount)} متبقٍ</span></div>`).join('')}
+      ${displaySchedule.sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b))).map(d=>`<div class="line"><span>${instLabel(d)} <small class="muted">${money(d.amount)}</small></span><span>${money(bal[d.id]?.remaining??d.amount)} متبقٍ</span></div>`).join('')}
+      ${isCard(i)?'<p class="note">الدفعة الأولى ثابتة؛ الدفعات التالية توقعات 5% من الرصيد بعد السداد المجدول. لا تشمل فوائد أو رسومًا أو مشتريات جديدة، ولا تُعد مدفوعة حتى تسجلها.</p>':''}
       <div class="actions">
         ${button('تسجيل سداد',`pay('${i.id}','${p?.id||''}')`,'')}
         ${button('تعديل',`editItem('${i.id}')`)}
@@ -373,16 +431,43 @@ function editItem(iid,pid){
     </select>
     <label>اسم البند</label>
     <input name="name" required value="${esc(i?.name||'')}">
+    <label>نوع البند</label>
+    <select name="type" onchange="toggleItemType()">
+      <option value="general" ${!isCard(i)?'selected':''}>بند عادي / تمويل</option>
+      <option value="card" ${isCard(i)?'selected':''}>بطاقة ائتمانية — الحد الأدنى ثم 5% متناقص</option>
+    </select>
     <label>المبلغ الإجمالي</label>
     <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${i?.amount||''}">
     <label>ملاحظة (اختياري)</label>
     <input name="note" value="${esc(i?.note||'')}" placeholder="مثلاً: يستمر حتى الإغلاق الفعلي">
-    <h3>الدفعات المجدولة (اختياري)</h3>
-    <div id="schedule">${(i?.schedule||[]).map(d=>scheduleRow(d.month,d.amount,d.id,d.date||'',d.label||'')).join('')}</div>
-    ${button('+ دفعة','addSchedule()')}
-    <p class="note">حدد شهر الدفعة ويومها إن كان معروفًا. اترك خانة اليوم فارغة إذا كان تاريخ الاستحقاق غير مؤكد. يمكنك إضافة متأخرات ودفعة عادية في الشهر نفسه.</p>
+    <div id="cardFields" ${!isCard(i)?'hidden':''}>
+      <h3>الدفعة الأولى للبطاقة</h3>
+      <label>الشهر</label>
+      <input name="cardFirstMonth" type="month" value="${i?.schedule?.[0]?.month||localToday().slice(0,7)}">
+      <label>يوم الاستحقاق (اختياري)</label>
+      <input name="cardFirstDay" type="number" inputmode="numeric" min="1" max="31" step="1" value="${i?.schedule?.[0]?.date?.slice(-2)||''}" placeholder="أدخل اليوم إن كان معلومًا">
+      <label>الحد الأدنى المطلوب للدفعة الأولى</label>
+      <input name="cardFirstMinimum" type="number" inputmode="decimal" min="0.01" step="0.01" value="${isCard(i)?i.schedule[0]?.amount??'':''}" placeholder="مثلاً 9,922.13">
+      <p class="note">بعد الدفعة الأولى تُحسب الدفعات تلقائيًا بنسبة 5% من الرصيد المتبقي، بافتراض سداد الدفعات المجدولة. يمكنك تسجيل مبلغ سداد أكبر ويتغير حساب الشهور اللاحقة تلقائيًا. تقدير دون فوائد أو رسوم أو مشتريات جديدة.</p>
+    </div>
+    <div id="regularFields" ${isCard(i)?'hidden':''}>
+      <h3>الدفعات المجدولة (اختياري)</h3>
+      <div id="schedule">${(i?.schedule||[]).map(d=>scheduleRow(d.month,d.amount,d.id,d.date||'',d.label||'')).join('')}</div>
+      ${button('+ دفعة','addSchedule()')}
+      <p class="note">حدد شهر الدفعة ويومها إن كان معروفًا. اترك خانة اليوم فارغة إذا كان تاريخ الاستحقاق غير مؤكد. يمكنك إضافة متأخرات ودفعة عادية في الشهر نفسه.</p>
+    </div>
     <div class="actions"><button type="submit">حفظ البند</button>${button('إلغاء','dismissModal(event)')}</div>
   </form>`);
+  toggleItemType();
+}
+function toggleItemType(){
+  const f=document.getElementById('f');if(!f)return;
+  const card=f.elements.type.value==='card';
+  document.getElementById('cardFields').hidden=!card;
+  document.getElementById('regularFields').hidden=card;
+  // Disabled fields are excluded from browser form validation and submission.
+  for(const field of document.querySelectorAll('#cardFields input'))field.disabled=!card;
+  for(const field of document.querySelectorAll('#regularFields input'))field.disabled=card;
 }
 function scheduleRow(month='',amount='',sid='',date='',label=''){
   const day=date?Number(date.slice(-2)):'';
@@ -401,39 +486,53 @@ function scheduleRow(month='',amount='',sid='',date='',label=''){
 function addSchedule(){document.getElementById('schedule').insertAdjacentHTML('beforeend',scheduleRow())}
 function submitItem(iid){
   const f=document.getElementById('f'),v=Object.fromEntries(new FormData(f));
-  const rows=[...document.querySelectorAll('#schedule .schedule-entry')];
-  const schedule=rows.map(r=>{
-    const month=r.querySelector('.sm').value, day=r.querySelector('.sd').value;
+  const type=v.type==='card'?'card':'general', amount=Number(v.amount);
+  const old=db.items.find(x=>x.id===iid);
+  let schedule=[];
+  if(type==='card'){
+    const month=v.cardFirstMonth,day=v.cardFirstDay;
+    if(!validMonth(month)||!(Number(v.cardFirstMinimum)>0)||!Number.isFinite(amount))return alert('أدخل شهر الدفعة الأولى والحد الأدنى');
     const date=day?month+'-'+String(Number(day)).padStart(2,'0'):'';
-    return {id:r.dataset.id||id(),month,date,label:r.querySelector('.sl').value.trim(),amount:Number(r.querySelector('.sa').value)};
-  });
+    if(date&&!validDate(date))return alert('تاريخ الدفعة الأولى غير صحيح');
+    if(Number(v.cardFirstMinimum)>amount+0.001)return alert('الحد الأدنى الأول لا يمكن أن يتجاوز مديونية البطاقة');
+    schedule=[{id:old?.schedule?.[0]?.id||id(),month,date,label:'الحد الأدنى الأول (ثابت)',amount:cents(v.cardFirstMinimum)}];
+  }else{
+    const rows=[...document.querySelectorAll('#schedule .schedule-entry')];
+    schedule=rows.map(r=>{
+      const month=r.querySelector('.sm').value, day=r.querySelector('.sd').value;
+      const date=day?month+'-'+String(Number(day)).padStart(2,'0'):'';
+      return {id:r.dataset.id||id(),month,date,label:r.querySelector('.sl').value.trim(),amount:Number(r.querySelector('.sa').value)};
+    });
+  }
   if(schedule.some(d=>!validMonth(d.month)||!(d.amount>0)||!Number.isFinite(d.amount)||(d.date&&!validDate(d.date))))return alert('تحقق من شهر الدفعة ويومها ومبلغها');
-  if(schedule.reduce((s,d)=>s+d.amount,0)>Number(v.amount)+0.001)return alert('مجموع الدفعات أكبر من قيمة البند');
-  let i=db.items.find(x=>x.id===iid);
-  if(i && Number(v.amount)<paidFor(i)-0.001)return alert('قيمة البند أقل من المسدد بالفعل');
-  if(i){
-    const itemPayments=db.payments.filter(p=>p.itemId===i.id);
-    if(itemPayments.length && v.planId!==i.planId)return alert('لا يمكن نقل بند له سداد مسجل إلى خطة أخرى');
+  if(schedule.reduce((s,d)=>s+d.amount,0)>amount+0.001)return alert('مجموع الدفعات أكبر من قيمة البند');
+  if(old && amount<paidFor(old)-0.001)return alert('قيمة البند أقل من المسدد بالفعل');
+  if(old){
+    const itemPayments=db.payments.filter(p=>p.itemId===old.id);
+    if(itemPayments.length && v.planId!==old.planId)return alert('لا يمكن نقل بند له سداد مسجل إلى خطة أخرى');
+    if(itemPayments.length && type!==old.type && (type==='card'||old.type==='card'))return alert('لا يمكن تغيير نوع البند بعد تسجيل سداد عليه');
+    if(isCard(old)&&itemPayments.length&&type==='card' && (old.schedule[0]?.month!==schedule[0]?.month || old.schedule[0]?.date!==schedule[0]?.date))return alert('لا يمكن تعديل تاريخ أول استحقاق بعد تسجيل سداد للبطاقة');
     const paidIds=new Set(itemPayments.filter(p=>p.installmentId).map(p=>p.installmentId));
     const keptIds=new Set(schedule.map(d=>d.id));
-    if([...paidIds].some(x=>!keptIds.has(x)))return alert('لا يمكن حذف دفعة مرتبطة بسداد مسجل. احذف سجل السداد أولًا');
+    if(type!=='card' && [...paidIds].some(x=>!keptIds.has(x)))return alert('لا يمكن حذف دفعة مرتبطة بسداد مسجل. احذف سجل السداد أولًا');
     for(const d of schedule){
       const linked=itemPayments.filter(p=>p.installmentId===d.id).reduce((sum,p)=>sum+Number(p.amount||0),0);
       if(d.amount<linked-0.001)return alert('قيمة إحدى الدفعات أقل من مبلغ مسدد ومسجل عليها');
     }
   }
-  if(!i){i={id:id()};db.items.push(i)}
-  Object.assign(i,{planId:v.planId,name:v.name,note:v.note||'',amount:Number(v.amount),schedule});
+  const record=old||{id:id()};
+  Object.assign(record,{planId:v.planId,name:v.name,note:v.note||'',amount:cents(amount),schedule,type,...(type==='card'?{cardRate:5}:{cardRate:undefined})});
+  if(!old)db.items.push(record);
   dismissModal();save();
 }
-
 function pay(iid,preferredPlanId='',preferredInstId=''){
   const i=db.items.find(x=>x.id===iid);
   if(!i)return alert('البند غير موجود');
   const left=remaining(i);
   if(!left)return alert('البند مسدد بالكامل');
   const bal=scheduleBalances(i);
-  const unpaid=i.schedule.filter(d=>(bal[d.id]?.remaining??Number(d.amount||0))>0).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
+  const computedSchedule=itemSchedule(i);
+  const unpaid=computedSchedule.filter(d=>(bal[d.id]?.remaining??Number(d.amount||0))>0).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
   const preferredInst=preferredInstId&&unpaid.find(d=>d.id===preferredInstId);
   const first=preferredInst||unpaid[0];
   const paymentDate=localToday();
@@ -454,7 +553,7 @@ function pay(iid,preferredPlanId='',preferredInstId=''){
       </select>
       <label>المبلغ المدفوع</label>
       <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${defaultAmount}">
-      ${i.schedule.length?`<label>الدفعة المرتبطة</label>
+      ${computedSchedule.length?`<label>الدفعة المرتبطة</label>
       <select name="installmentId">
         ${options}
         <option value="">سداد عام للبند — يُوزع على أقدم دفعة غير مسددة</option>
@@ -492,7 +591,7 @@ function history(iid){
   const i=db.items.find(x=>x.id===iid), ps=db.payments.filter(p=>p.itemId===iid).sort((a,b)=>b.date.localeCompare(a.date));
   show(`<h2>سجل السداد</h2>
     ${ps.map(p=>{
-      const d=i.schedule.find(x=>x.id===p.installmentId), source=db.plans.find(x=>x.id===p.planId);
+      const d=itemSchedule(i).find(x=>x.id===p.installmentId), source=db.plans.find(x=>x.id===p.planId);
       return `<div class="line"><span>${dateName(p.date)} — ${money(p.amount)}${d?`<div class="muted">دفعة ${instLabel(d)}</div>`:'<div class="muted">سداد عام</div>'}<div class="muted">من ${esc(planLabel(source)||'خطة محذوفة')}</div></span>${button('حذف',`removePay('${p.id}')`,'danger small')}</div>`;
     }).join('')||'لا توجد مدفوعات'}
     <div class="actions">${button('إغلاق','dismissModal(event)')}</div>`);
@@ -582,7 +681,12 @@ function normalizeDataFile(src){
       amount,carry,carryFromPlanId:p.carryFromPlanId?fieldId(p.carryFromPlanId,'مصدر الترحيل'):'',note:textField(p.note,'ملاحظة الخطة')};
   }),items:raw.items.map((i,n)=>{
     if(!i||typeof i!=='object'||!Array.isArray(i.schedule))importErr('جدول بند غير صالح: '+(n+1));
+    const type=i.type==='card'?'card':(i.type==null||i.type==='general'?'general':importErr('نوع البند غير مدعوم'));
+    const cardRate=type==='card'?Number(i.cardRate??5):undefined;
+    if(type==='card'&&cardRate!==5)importErr('نسبة البطاقة المدعومة هي 5%');
+    if(type==='card'&&i.schedule.length!==1)importErr('البطاقة تحتاج دفعة أولى ثابتة واحدة فقط؛ البقية تُحسب تلقائيًا');
     return {id:fieldId(i.id,'البند'),planId:fieldId(i.planId,'خطة البند'),name:textField(i.name,'اسم البند',200),
+      type, ...(type==='card'?{cardRate:5}:{}),
       note:textField(i.note,'ملاحظة البند'),amount:moneyField(i.amount,'البند '+(n+1),false),
       schedule:i.schedule.map((d,j)=>{
         if(!d||!validMonth(d.month))importErr('شهر الدفعة غير صحيح في البند '+(n+1));
@@ -623,6 +727,7 @@ function validateImportedData(model){
       scheduled+=d.amount;installmentIds.add(d.id);installments.set(d.id,{d,itemId:i.id});
     }
     if(scheduled>i.amount+0.005)importErr('مجموع دفعات '+i.name+' يتجاوز قيمة البند');
+    if(isCard(i) && (i.schedule.length!==1||i.schedule[0].amount>i.amount+0.005))importErr('الحد الأدنى الأول للبطاقة غير صالح');
   }
   const itemPaid=new Map(),instPaid=new Map();
   for(const p of model.payments){
@@ -631,13 +736,25 @@ function validateImportedData(model){
     if(!plans.has(p.planId))importErr('سداد مرتبط بخطة غير موجودة');
     if(!items.has(p.itemId))importErr('سداد مرتبط ببند غير موجود');
     if(plans.get(p.planId).date>p.date)importErr('تاريخ سداد يسبق توفر مبلغ الخطة');
-    if(p.installmentId && installments.get(p.installmentId)?.itemId!==p.itemId)importErr('السداد مرتبط بدفعة لا تخص البند');
+    if(p.installmentId){
+      let linked=installments.get(p.installmentId)?.itemId===p.itemId;
+      if(!linked && isCard(items.get(p.itemId))){
+        const it=items.get(p.itemId);
+        const cardPattern='card_'+it.id+'_';
+        const suffix=p.installmentId.slice(cardPattern.length);
+        linked=p.installmentId.startsWith(cardPattern)&&/^[0-9]{6}$/.test(suffix)&&validMonth(suffix.slice(0,4)+'-'+suffix.slice(4))&&suffix>it.schedule[0].month.replace('-','');
+      }
+      if(!linked)importErr('السداد مرتبط بدفعة لا تخص البند');
+    }
     spent.set(p.planId,(spent.get(p.planId)||0)+p.amount);
     itemPaid.set(p.itemId,(itemPaid.get(p.itemId)||0)+p.amount);
     if(p.installmentId)instPaid.set(p.installmentId,(instPaid.get(p.installmentId)||0)+p.amount);
   }
   for(const [i,amount] of itemPaid){if(amount>items.get(i).amount+0.005)importErr('سداد يتجاوز قيمة البند: '+items.get(i).name)}
-  for(const [i,amount] of instPaid){if(amount>installments.get(i).d.amount+0.005)importErr('سداد يتجاوز قيمة الدفعة');}
+  for(const [i,amount] of instPaid){
+    const saved=installments.get(i);
+    if(saved && amount>saved.d.amount+0.005)importErr('سداد يتجاوز قيمة الدفعة');
+  }
   for(const p of model.plans){
     if(p.amount+p.carry-(out.get(p.id)||0)-(spent.get(p.id)||0)<-0.005)importErr('رصيد سالب في خطة: '+(p.name||p.date));
   }
@@ -688,7 +805,7 @@ function applyImport(mode){
         }else if(mode==='update'&&key==='items'){
           const pos=result.items.findIndex(x=>x.id===rec.id);
           const old=result.items[pos];
-          result.items[pos]={...old,name:rec.name,amount:rec.amount,note:rec.note,schedule:rec.schedule};
+          result.items[pos]={...old,name:rec.name,amount:rec.amount,note:rec.note,schedule:rec.schedule,type:rec.type,cardRate:rec.cardRate};
           updatedItems++;
         }
       }
