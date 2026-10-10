@@ -114,6 +114,8 @@ function availableForCarry(sourceId,targetId=''){
   return v;
 }
 function remaining(i){return Math.max(0,Number(i.amount||0)-paidFor(i))}
+function instSortDate(d){return d.date||d.month+'-31'}
+function instLabel(d){return (d.label?esc(d.label)+' — ':'')+(d.date?dateName(d.date):monthName(d.month))}
 function scheduleBalances(item){
   const explicit={};
   let general=0;
@@ -121,7 +123,7 @@ function scheduleBalances(item){
     if(p.installmentId) explicit[p.installmentId]=(explicit[p.installmentId]||0)+Number(p.amount||0);
     else general+=Number(p.amount||0);
   });
-  const rows=item.schedule.map((d,idx)=>({...d,_idx:idx})).sort((a,b)=>a.month.localeCompare(b.month)||a._idx-b._idx);
+  const rows=item.schedule.map((d,idx)=>({...d,_idx:idx})).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b))||a._idx-b._idx);
   const out={};
   rows.forEach(d=>{
     const linked=Math.min(Number(d.amount||0),explicit[d.id]||0);
@@ -160,7 +162,7 @@ function scheduledEntriesForMonth(month,excludeOriginPlanId='',notAfterDate=''){
       }
     });
   });
-  return rows.sort((a,b)=>String(a.item.name).localeCompare(String(b.item.name),'ar'));
+  return rows.sort((a,b)=>instSortDate(a.inst).localeCompare(instSortDate(b.inst))||String(a.item.name).localeCompare(String(b.item.name),'ar'));
 }
 function button(label,fn,cl='secondary'){const noValidate=(label==='إلغاء'||label==='إغلاق')?' formnovalidate':'';return `<button type="button"${noValidate} class="${cl}" onclick="${fn}">${label}</button>`}
 function go(t){tab=t;active=null;render()}
@@ -267,7 +269,7 @@ function items(){
     <h3>دفعات مجدولة لهذا الشهر من خطط أخرى — ${monthName(planMonth(p))}</h3>
     <p class="note">تظهر هنا الدفعات المجدولة من خطط أخرى حتى تاريخ هذه الخطة، ويمكن سدادها من أي خطة متاحة.</p>
     ${inherited.map(x=>`<div class="line">
-      <div><b>${esc(x.item.name)}</b><div class="muted">من ${esc(planLabel(x.originPlan)||'خطة سابقة')} · أصل الدفعة ${money(x.inst.amount)}</div></div>
+      <div><b>${esc(x.item.name)}</b><div class="muted">${instLabel(x.inst)} · من ${esc(planLabel(x.originPlan)||'خطة سابقة')} · أصل الدفعة ${money(x.inst.amount)}</div></div>
       <div style="text-align:left"><b>${money(x.remaining)}</b><div>${button('سداد',`pay('${x.item.id}','${p.id}','${x.inst.id}')`,'small')}</div></div>
     </div>`).join('')}
   </div>`:''}
@@ -283,7 +285,7 @@ function items(){
         <div class="stat"><span class="muted">قيمة البند</span><b>${money(i.amount)}</b></div>
         <div class="stat"><span class="muted">المتبقي</span><b>${money(remaining(i))}</b></div>
       </div>
-      ${i.schedule.map(d=>`<div class="line"><span>${monthName(d.month)} <small class="muted">${money(d.amount)}</small></span><span>${money(bal[d.id]?.remaining??d.amount)} متبقٍ</span></div>`).join('')}
+      ${[...i.schedule].sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b))).map(d=>`<div class="line"><span>${instLabel(d)} <small class="muted">${money(d.amount)}</small></span><span>${money(bal[d.id]?.remaining??d.amount)} متبقٍ</span></div>`).join('')}
       <div class="actions">
         ${button('تسجيل سداد',`pay('${i.id}','${p?.id||''}')`,'')}
         ${button('تعديل',`editItem('${i.id}')`)}
@@ -376,27 +378,36 @@ function editItem(iid,pid){
     <label>ملاحظة (اختياري)</label>
     <input name="note" value="${esc(i?.note||'')}" placeholder="مثلاً: يستمر حتى الإغلاق الفعلي">
     <h3>الدفعات المجدولة (اختياري)</h3>
-    <div id="schedule">${(i?.schedule||[]).map(d=>scheduleRow(d.month,d.amount,d.id)).join('')}</div>
+    <div id="schedule">${(i?.schedule||[]).map(d=>scheduleRow(d.month,d.amount,d.id,d.date||'',d.label||'')).join('')}</div>
     ${button('+ دفعة','addSchedule()')}
-    <p class="note">حدد أي شهر تريده لكل دفعة، حتى لو كانت الأشهر غير متتالية.</p>
+    <p class="note">حدد شهر الدفعة ويومها إن كان معروفًا. اترك خانة اليوم فارغة إذا كان تاريخ الاستحقاق غير مؤكد. يمكنك إضافة متأخرات ودفعة عادية في الشهر نفسه.</p>
     <div class="actions"><button type="submit">حفظ البند</button>${button('إلغاء','dismissModal(event)')}</div>
   </form>`);
 }
-function scheduleRow(month='',amount='',sid=''){
-  return `<div class="two" style="margin:8px 0">
-    <input type="month" class="sm" value="${month}" data-id="${sid}">
-    <div style="display:flex;gap:4px">
-      <input type="number" inputmode="decimal" class="sa" placeholder="المبلغ" min="0.01" step="0.01" value="${amount}">
-      <button type="button" class="danger small" onclick="this.closest('.two').remove()">×</button>
+function scheduleRow(month='',amount='',sid='',date='',label=''){
+  const day=date?Number(date.slice(-2)):'';
+  return `<div class="schedule-entry" style="padding:10px;margin:10px 0;border:1px solid #d8e2e9;border-radius:11px" data-id="${sid}">
+    <div class="two">
+      <div><label>الشهر</label><input type="month" class="sm" value="${month}"></div>
+      <div><label>يوم الاستحقاق (اختياري)</label><input type="number" inputmode="numeric" class="sd" min="1" max="31" step="1" placeholder="مثلاً 27" value="${day}"></div>
     </div>
+    <div class="two">
+      <div><label>مبلغ الدفعة</label><input type="number" inputmode="decimal" class="sa" placeholder="المبلغ" min="0.01" step="0.01" value="${amount}"></div>
+      <div><label>نوع الدفعة</label><input class="sl" maxlength="120" value="${esc(label)}" placeholder="متأخرات / قسط"></div>
+    </div>
+    <div class="actions"><button type="button" class="danger small" onclick="this.closest('.schedule-entry').remove()">حذف الدفعة</button></div>
   </div>`;
 }
 function addSchedule(){document.getElementById('schedule').insertAdjacentHTML('beforeend',scheduleRow())}
 function submitItem(iid){
   const f=document.getElementById('f'),v=Object.fromEntries(new FormData(f));
-  const rows=[...document.querySelectorAll('#schedule .two')];
-  const schedule=rows.map(r=>({id:r.querySelector('.sm').dataset.id||id(),month:r.querySelector('.sm').value,amount:Number(r.querySelector('.sa').value)}));
-  if(schedule.some(d=>!d.month||d.amount<=0))return alert('أكمل تواريخ ومبالغ الدفعات');
+  const rows=[...document.querySelectorAll('#schedule .schedule-entry')];
+  const schedule=rows.map(r=>{
+    const month=r.querySelector('.sm').value, day=r.querySelector('.sd').value;
+    const date=day?month+'-'+String(Number(day)).padStart(2,'0'):'';
+    return {id:r.dataset.id||id(),month,date,label:r.querySelector('.sl').value.trim(),amount:Number(r.querySelector('.sa').value)};
+  });
+  if(schedule.some(d=>!validMonth(d.month)||!(d.amount>0)||!Number.isFinite(d.amount)||(d.date&&!validDate(d.date))))return alert('تحقق من شهر الدفعة ويومها ومبلغها');
   if(schedule.reduce((s,d)=>s+d.amount,0)>Number(v.amount)+0.001)return alert('مجموع الدفعات أكبر من قيمة البند');
   let i=db.items.find(x=>x.id===iid);
   if(i && Number(v.amount)<paidFor(i)-0.001)return alert('قيمة البند أقل من المسدد بالفعل');
@@ -422,7 +433,7 @@ function pay(iid,preferredPlanId='',preferredInstId=''){
   const left=remaining(i);
   if(!left)return alert('البند مسدد بالكامل');
   const bal=scheduleBalances(i);
-  const unpaid=i.schedule.filter(d=>(bal[d.id]?.remaining??Number(d.amount||0))>0).sort((a,b)=>a.month.localeCompare(b.month));
+  const unpaid=i.schedule.filter(d=>(bal[d.id]?.remaining??Number(d.amount||0))>0).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
   const preferredInst=preferredInstId&&unpaid.find(d=>d.id===preferredInstId);
   const first=preferredInst||unpaid[0];
   const paymentDate=localToday();
@@ -431,7 +442,7 @@ function pay(iid,preferredPlanId='',preferredInstId=''){
   const preferred=funding.find(p=>p.id===preferredPlanId)||funding.find(p=>p.id===i.planId)||funding[0];
   const instLeft=first?(bal[first.id]?.remaining??Number(first.amount||0)):left;
   const defaultAmount=Math.min(left,planBalance(preferred),instLeft);
-  const options=unpaid.map(d=>`<option value="${d.id}" ${first?.id===d.id?'selected':''}>${monthName(d.month)} — متبقي ${money(bal[d.id]?.remaining??d.amount)}</option>`).join('');
+  const options=unpaid.map(d=>`<option value="${d.id}" ${first?.id===d.id?'selected':''}>${instLabel(d)} — متبقي ${money(bal[d.id]?.remaining??d.amount)}</option>`).join('');
   show(`<h2>سداد: ${esc(i.name)}</h2>
     <p>المتبقي على البند: <b>${money(left)}</b></p>
     <form id="f" onsubmit="event.preventDefault();submitPay('${iid}')">
@@ -482,7 +493,7 @@ function history(iid){
   show(`<h2>سجل السداد</h2>
     ${ps.map(p=>{
       const d=i.schedule.find(x=>x.id===p.installmentId), source=db.plans.find(x=>x.id===p.planId);
-      return `<div class="line"><span>${dateName(p.date)} — ${money(p.amount)}${d?`<div class="muted">دفعة ${monthName(d.month)}</div>`:'<div class="muted">سداد عام</div>'}<div class="muted">من ${esc(planLabel(source)||'خطة محذوفة')}</div></span>${button('حذف',`removePay('${p.id}')`,'danger small')}</div>`;
+      return `<div class="line"><span>${dateName(p.date)} — ${money(p.amount)}${d?`<div class="muted">دفعة ${instLabel(d)}</div>`:'<div class="muted">سداد عام</div>'}<div class="muted">من ${esc(planLabel(source)||'خطة محذوفة')}</div></span>${button('حذف',`removePay('${p.id}')`,'danger small')}</div>`;
     }).join('')||'لا توجد مدفوعات'}
     <div class="actions">${button('إغلاق','dismissModal(event)')}</div>`);
 }
@@ -575,7 +586,9 @@ function normalizeDataFile(src){
       note:textField(i.note,'ملاحظة البند'),amount:moneyField(i.amount,'البند '+(n+1),false),
       schedule:i.schedule.map((d,j)=>{
         if(!d||!validMonth(d.month))importErr('شهر الدفعة غير صحيح في البند '+(n+1));
-        return {id:fieldId(d.id,'الدفعة'),month:d.month,amount:moneyField(d.amount,'دفعة '+(j+1),false)};
+        const date=d.date||'';
+        if(date&&(!validDate(date)||date.slice(0,7)!==d.month))importErr('تاريخ استحقاق الدفعة لا يطابق شهرها في البند '+(n+1));
+        return {id:fieldId(d.id,'الدفعة'),month:d.month,date,label:textField(d.label,'وصف الدفعة',120),amount:moneyField(d.amount,'دفعة '+(j+1),false)};
       })};
   }),payments:raw.payments.map((p,i)=>{
     if(!p||!validDate(p.date))importErr('تاريخ سداد غير صالح: '+(i+1));
@@ -644,10 +657,12 @@ async function readImportFile(input){
       <p><b>${esc(textField(m.title||file.name,'عنوان الملف',200))}</b></p>
       <p class="note">${esc(info)}</p>
       ${caution?`<p class="note neg">${esc(caution)}</p>`:''}
-      <p class="note"><b>دمج:</b> يضيف العناصر الجديدة فقط، ولا يحذف بياناتك الموجودة ولا يكرر عناصر بنفس المعرّف.</p>
+      <p class="note"><b>تحديث البنود:</b> يضيف أي خطة أو بند غير موجود ويحدّث البنود المستوردة المطابقة، بما فيها مبالغ ومواعيد دفعاتها، مع إبقاء سجلات السداد والخطط الموجودة كما هي. راجع التغييرات إذا كنت عدّلت البنود يدويًا.</p>
+      <p class="note"><b>دمج فقط:</b> يضيف العناصر الجديدة دون تعديل البنود الموجودة.</p>
       <p class="note"><b>استبدال:</b> يمسح بيانات مبالغي الحالية ويضع بيانات الملف مكانها. يُفضّل تصدير نسخة احتياطية أولًا.</p>
       <div class="actions">
-        ${button('دمج بدون حذف','applyImport(\'merge\')','')}
+        ${button('تحديث البنود ودمج الجديد','applyImport(\'update\')','')}
+        ${button('إضافة غير الموجودة فقط','applyImport(\'merge\')')}
         ${button('استبدال كل البيانات','applyImport(\'replace\')','danger')}
         ${button('نسخة احتياطية أولًا','exportData()')}
         ${button('إلغاء','dismissModal(event)')}
@@ -657,29 +672,35 @@ async function readImportFile(input){
 function applyImport(mode){
   if(!pendingImport)return alert('اختر ملفًا للاستيراد أولًا');
   const source=pendingImport.model;
-  let result,added={plans:0,items:0,payments:0};
+  let result,added={plans:0,items:0,payments:0},updatedItems=0;
   if(mode==='replace'){
     if(!confirm('سيتم حذف كل بيانات مبالغي الحالية واستبدالها ببيانات الملف. هل أنت متأكد؟'))return;
     if(!confirm('تأكيد أخير: هل تريد استبدال كل الخطط والبنود وسجلات السداد؟'))return;
     result=source;
   }else{
+    if(mode==='update'&&!confirm('سيتم تحديث مبالغ وجداول البنود المتطابقة مع ملف الاستيراد، مع الإبقاء على خططك وسجلات السداد. هل تريد المتابعة؟'))return;
     result={plans:[...db.plans],items:[...db.items],payments:[...db.payments]};
     for(const key of ['plans','items','payments']){
       const oldIds=new Set(result[key].map(x=>x.id));
       for(const rec of source[key]){
         if(!oldIds.has(rec.id)){
           result[key].push(rec);oldIds.add(rec.id);added[key]++;
+        }else if(mode==='update'&&key==='items'){
+          const pos=result.items.findIndex(x=>x.id===rec.id);
+          const old=result.items[pos];
+          result.items[pos]={...old,name:rec.name,amount:rec.amount,note:rec.note,schedule:rec.schedule};
+          updatedItems++;
         }
       }
     }
-    try{validateImportedData(result)}catch(err){alert('تعذر الدمج دون تعارض: '+err.message);return;}
+    try{validateImportedData(result)}catch(err){alert('تعذر تحديث البنود دون تعارض: '+err.message+' — لم تتغير بياناتك.');return;}
   }
   try{localStorage.setItem(KEY,JSON.stringify(result));}
   catch(err){alert('تعذر الحفظ على الجهاز؛ لم تتغير البيانات الأصلية. '+String(err.message||err).slice(0,100));return;}
   db=result;pendingImport=null;active=null;tab='dashboard';
   dismissModal();render();
   if(mode==='replace')alert('تم استبدال بيانات مبالغي بالملف المستورد بنجاح.');
-  else alert(`تم الدمج: ${added.plans} خطة و${added.items} بند و${added.payments} عملية سداد جديدة.`);
+  else alert(`تم الاستيراد: ${added.plans} خطة جديدة، و${added.items} بند جديد، و${updatedItems} بند محدّث، و${added.payments} سداد جديد.`);
 }
 
 if('serviceWorker'in navigator){
