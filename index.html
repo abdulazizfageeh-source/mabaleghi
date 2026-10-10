@@ -38,11 +38,24 @@ label{display:block;font-size:13px;color:#536b7f;margin:10px 0 5px}
 .bar{height:9px;background:#e8eef3;border-radius:20px;overflow:hidden;margin-top:10px}
 .bar>div{height:100%;background:#1a9a78}
 .note{font-size:12px;color:#718497;line-height:1.7}
-dialog{position:relative;border:0;border-radius:18px;padding:18px;width:min(94vw,480px);max-height:85vh;overflow:auto}
+dialog{position:fixed;inset:50% auto auto 50%;transform:translate(-50%,-50%);margin:0;border:0;border-radius:18px;padding:18px;width:min(94vw,480px);max-height:85dvh;overflow:auto;overscroll-behavior:contain}
 dialog::backdrop{background:#071b2ca8}
 h2{font-size:19px;margin:0 0 12px}.modalClose{position:absolute;left:10px;top:10px;width:34px;height:34px;padding:0;border-radius:50%;background:#eef3f6;color:#36576a;font-size:22px;line-height:34px}
 h3{font-size:16px}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+[hidden]{display:none!important}
+.installments{border:1px solid #e0e8ee;border-radius:12px;padding:10px;margin-top:12px}
+.installments summary{font-weight:650;color:#146c87;cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.installments summary::after{content:'⌄';font-size:20px}
+.installments[open] summary::after{content:'⌃'}
+.installments .installment-row{border-top:1px solid #edf1f4;margin-top:10px;padding-top:10px}
+.installments select{margin-top:5px}
+.pill{font-size:12px;border-radius:30px;padding:4px 8px;background:#edf3f7;color:#36586a}
+.quickAdd{position:fixed;bottom:calc(82px + env(safe-area-inset-bottom));right:16px;z-index:4;border-radius:28px;padding:13px 19px;box-shadow:0 5px 22px #1638494d}
+.item-list-pad{height:67px}
+.card-emphasis{border:1px solid #acd7d7}
+.full-line{margin-top:10px;padding-top:10px;border-top:1px solid #ecf0f4}
+@media(max-width:360px){.two{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -143,7 +156,7 @@ function itemSchedule(item){
     const due=k===0?cents(Math.min(balance,first.amount)):cents(Math.min(balance,balance*rate/100));
     if(due<0.01)break;
     const date=dueDay?`${month}-${String(Math.min(dueDay,monthEndDay(month))).padStart(2,'0')}`:'';
-    months.push(k===0?{...first,amount:due,date}:{id:cardInstallmentId(item,month),month,date,label:'الحد الأدنى المتوقع — 5% من الرصيد المتبقي',amount:due});
+    months.push(k===0?{...first,amount:due,date}:{id:cardInstallmentId(item,month),month,date,label:'الحد الأدنى المتوقع — 5% من الرصيد المتبقي',kind:item.installmentKinds?.[cardInstallmentId(item,month)]||'regular',fundingPlanId:item.installmentFunding?.[cardInstallmentId(item,month)]||'',amount:due});
     const actuallyPaid=byPaidMonth[month]||0;
     balance=cents(Math.max(0,balance-Math.max(due,actuallyPaid)));
   }
@@ -169,6 +182,35 @@ function cardScheduleBalances(item){
   }
   return result;
 }
+function installmentKind(d){
+  if(d?.kind==='arrears')return 'arrears';
+  if(d?.kind==='regular')return 'regular';
+  return /متأخر/.test(String(d?.label||''))?'arrears':'regular';
+}
+function installmentKindLabel(d){return installmentKind(d)==='arrears'?'متأخرات':'قسط عادي'}
+function linkedPlanId(item,inst){return String(inst?.fundingPlanId||item?.installmentFunding?.[inst?.id]||'')}
+function commitmentsForPlan(planId){
+  let total=0;
+  for(const i of db.items){
+    const balances=scheduleBalances(i);
+    for(const d of itemSchedule(i)){
+      if(linkedPlanId(i,d)===planId)total+=Math.max(0,Number(balances[d.id]?.remaining??d.amount??0));
+    }
+  }
+  return cents(total);
+}
+function unallocatedInPlan(p){return cents(planBalance(p)-commitmentsForPlan(p.id))}
+function fundingLabel(id){return id?planLabel(db.plans.find(p=>p.id===id)):'غير مرتبطة بخطة'}
+let planAvailabilityCache=new Map();
+function cachedUnallocated(p){
+  if(!planAvailabilityCache.has(p.id))planAvailabilityCache.set(p.id,unallocatedInPlan(p));
+  return planAvailabilityCache.get(p.id);
+}
+function fundingSelectOptions(selectedId='',emptyLabel='غير مرتبطة بخطة'){
+  return `<option value="" ${!selectedId?'selected':''}>${emptyLabel}</option>`+
+    [...db.plans].sort((a,b)=>planDate(a).localeCompare(planDate(b))).map(p=>`<option value="${p.id}" ${selectedId===p.id?'selected':''}>${esc(planLabel(p))} · ${dateName(planDate(p))} · غير مخصص ${money(cachedUnallocated(p))}</option>`).join('');
+}
+function fundingOverdrawn(){return db.plans.find(p=>commitmentsForPlan(p.id)>planBalance(p)+0.005)}
 function instSortDate(d){return d.date||d.month+'-31'}
 function instLabel(d){return (d.label?esc(d.label)+' — ':'')+(d.date?dateName(d.date):monthName(d.month))}
 function scheduleBalances(item){
@@ -207,24 +249,49 @@ function fundingPlansFor(date){
 function scheduledEntriesForMonth(month,excludeOriginPlanId='',notAfterDate=''){
   const rows=[];
   db.items.forEach(item=>{
-    if(excludeOriginPlanId && item.planId===excludeOriginPlanId)return;
     const originPlan=db.plans.find(p=>p.id===item.planId);
-    if(notAfterDate && originPlan && planDate(originPlan)>notAfterDate)return;
     const bal=scheduleBalances(item);
     itemSchedule(item).forEach(inst=>{
       const left=bal[inst.id]?.remaining??Number(inst.amount||0);
-      if(inst.month===month && left>0.0001){
+      if(inst.month===month&&left>0.0001){
+        if(excludeOriginPlanId&&item.planId===excludeOriginPlanId)return;
+        if(notAfterDate&&originPlan&&planDate(originPlan)>notAfterDate)return;
         rows.push({item,inst,remaining:left,originPlan});
       }
     });
   });
-  return rows.sort((a,b)=>instSortDate(a.inst).localeCompare(instSortDate(b.inst))||String(a.item.name).localeCompare(String(b.item.name),'ar'));
+  return rows.sort((a,b)=>instSortDate(a.inst).localeCompare(instSortDate(b.inst)));
+}
+function scheduledEntriesForPlan(planId){
+  const result=[];
+  for(const item of db.items){
+    const bal=scheduleBalances(item);
+    for(const inst of itemSchedule(item)){
+      if(linkedPlanId(item,inst)!==planId)continue;
+      const left=bal[inst.id]?.remaining??inst.amount;
+      result.push({item,inst,remaining:left});
+    }
+  }
+  return result.sort((a,b)=>instSortDate(a.inst).localeCompare(instSortDate(b.inst)));
 }
 function button(label,fn,cl='secondary'){const noValidate=(label==='إلغاء'||label==='إغلاق')?' formnovalidate':'';return `<button type="button"${noValidate} class="${cl}" onclick="${fn}">${label}</button>`}
+const expandedInstallments=new Set();
+function toggleInstallments(iid,node){
+  if(node.open===expandedInstallments.has(iid))return;
+  if(node.open)expandedInstallments.add(iid);
+  else expandedInstallments.delete(iid);
+  render();
+}
 function go(t){tab=t;active=null;render()}
 function render(){
+  planAvailabilityCache=new Map();
+  const container=document.getElementById('view');
+  container.querySelectorAll('details.installments').forEach(node=>{
+    const iid=node.closest('[id^="item-"]')?.id.slice(5);
+    if(iid){if(node.open)expandedInstallments.add(iid);else expandedInstallments.delete(iid)}
+  });
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b.id==='tab-'+tab));
-  document.getElementById('view').innerHTML=tab==='dashboard'?dashboard():tab==='plans'?plans():items();
+  container.innerHTML=tab==='dashboard'?dashboard():tab==='plans'?plans():items();
 }
 
 function dashboard(){
@@ -239,6 +306,7 @@ function dashboard(){
   const scheduled=list.reduce((sum,m)=>sum+due(m),0);
   const balance=ps.reduce((sum,p)=>sum+planBalance(p),0);
   const usableBase=Math.max(0,entered+carryIn-carryOut);
+  const committed=ps.reduce((sum,p)=>sum+commitmentsForPlan(p.id),0);
   return `<div class="card">
     <h2>لوحة التحكم</h2>
     <label>عرض الفترة</label>
@@ -255,7 +323,7 @@ function dashboard(){
     <div class="muted">المتبقي الحالي من مبالغ خطط الفترة</div>
     <div class="big ${balance<0?'neg':''}">${money(balance)}</div>
     <div class="bar"><div style="width:${usableBase?Math.min(100,Math.max(0,balance/usableBase*100)):0}%"></div></div>
-    <p class="note">المتبقي يعكس وضع الخطط الآن، بما في ذلك ما تم ترحيله منها لاحقًا وما تم سداده من مبالغها.</p>
+    <p class="note">المتبقي النقدي بعد السداد الفعلي والترحيل. ربط دفعة بخطة يحجزها ضمن المخصص فقط ولا يخصمها نقديًا إلا عند السداد.</p>
   </div>
   <div class="grid">
     <div class="stat"><span class="muted">مبالغ جديدة</span><b>${money(entered)}</b></div>
@@ -263,6 +331,8 @@ function dashboard(){
     <div class="stat"><span class="muted">ترحيل صادر</span><b>${money(carryOut)}</b></div>
     <div class="stat"><span class="muted">مسدد من هذه الخطط</span><b>${money(paidFromPlans)}</b></div>
     <div class="stat"><span class="muted">دفعات مجدولة في الفترة</span><b>${money(scheduled)}</b></div>
+    <div class="stat"><span class="muted">مخصص لدفعات من هذه الخطط</span><b>${money(committed)}</b></div>
+    <div class="stat"><span class="muted">متاح غير مخصص</span><b>${money(balance-committed)}</b></div>
     <div class="stat"><span class="muted">عدد الخطط</span><b>${ps.length}</b></div>
   </div>
   <div class="card" style="margin-top:13px">
@@ -288,74 +358,103 @@ function plans(){
   const sorted=[...db.plans].sort((a,b)=>planDate(b).localeCompare(planDate(a)));
   return `<div class="card">
     <div class="line"><h2>الخطط</h2>${button('+ خطة جديدة','editPlan()','')}</div>
-    <p class="note">كل خطة مرتبطة بتاريخ توفر مبلغ. ويمكن إنشاء أكثر من خطة في الشهر نفسه وترحيل الرصيد بينها.</p>
+    <p class="note">أنشئ المبلغ وتاريخه أولًا، ثم اربط أي دفعة من أي بند بهذه الخطة. الترحيل اختياري.</p>
   </div>
   ${sorted.map(p=>{
-    const monthDue=scheduledEntriesForMonth(planMonth(p)).reduce((sum,x)=>sum+x.remaining,0);
+    const committed=commitmentsForPlan(p.id),current=planBalance(p);
+    const linked=scheduledEntriesForPlan(p.id);
     return `<div class="card">
-      <div class="line">
-        <div><b>${esc(planLabel(p))}</b><div class="muted">تاريخ توفر المبلغ: ${dateName(planDate(p))}</div></div>
-        <span class="tag">${money(planBalance(p))}</span>
-      </div>
+      <div class="line"><div><b>${esc(planLabel(p))}</b><div class="muted">تاريخ توفر المبلغ: ${dateName(planDate(p))}</div></div>
+        <span class="tag">${money(current)}</span></div>
       <div class="grid">
         <div class="stat"><span class="muted">المتاح قبل السداد</span><b>${money(planMoney(p)-outgoingCarry(p.id))}</b></div>
         <div class="stat"><span class="muted">المسدد من الخطة</span><b>${money(totalPaid(p))}</b></div>
+        <div class="stat"><span class="muted">مخصص لدفعات</span><b>${money(committed)}</b></div>
+        <div class="stat"><span class="muted">غير مخصص</span><b class="${current-committed<-0.005?'neg':''}">${money(current-committed)}</b></div>
       </div>
       ${p.note?`<p class="note">${esc(p.note)}</p>`:''}
-      ${p.carryFromPlanId?`<p class="note">يتضمن ${money(p.carry)} مرحّلة من ${esc(planLabel(db.plans.find(x=>x.id===p.carryFromPlanId))||'خطة سابقة')}.</p>`:''}
-      ${monthDue>0?`<p class="note">دفعات مجدولة غير مسددة في ${monthName(planMonth(p))}: <b>${money(monthDue)}</b>.</p>`:''}
-      <div class="actions">
-        ${button('فتح البنود',`openPlan('${p.id}')`,'')}
-        ${button('تعديل',`editPlan('${p.id}')`)}
-        ${button('حذف',`deletePlan('${p.id}')`,'danger')}
-      </div>
+      ${p.carryFromPlanId?`<p class="note">يتضمن ${money(p.carry)} مرحّلة من ${esc(fundingLabel(p.carryFromPlanId))}.</p>`:''}
+      ${linked.length?`<details class="installments"><summary>الدفعات المرتبطة (${linked.length})</summary>
+        ${linked.map(x=>`<div class="line"><div><b>${esc(x.item.name)}</b><div class="muted">${instLabel(x.inst)} · ${installmentKindLabel(x.inst)}</div></div>
+          <div style="text-align:left"><b>${money(x.remaining)}</b>${x.remaining>0?`<div>${button('سداد',`pay('${x.item.id}','${p.id}','${x.inst.id}')`,'small')}</div>`:''}</div></div>`).join('')}</details>`:''}
+      <div class="actions">${button('عرض البنود المرتبطة',`openPlan('${p.id}')`,'')}
+        ${button('تعديل',`editPlan('${p.id}')`)}${button('حذف',`deletePlan('${p.id}')`,'danger')}</div>
     </div>`;
   }).join('')||'<div class="card">ابدأ بإضافة أول خطة.</div>'}`;
 }
-
 function items(){
   const p=active?db.plans.find(x=>x.id===active):null;
-  const its=db.items.filter(i=>!p||i.planId===p.id);
-  const inherited=p?scheduledEntriesForMonth(planMonth(p),p.id,planDate(p)):[];
+  const its=p?db.items.filter(i=>itemSchedule(i).some(d=>linkedPlanId(i,d)===p.id)):[...db.items].reverse();
   return `<div class="card">
-    <div class="line"><h2>${p?'بنود '+esc(planLabel(p)):'جميع البنود'}</h2>${button('+ إضافة بند',`editItem('','${p?.id||''}')`,'')}</div>
-    ${p?`<p class="muted">المتبقي من مبلغ الخطة: ${money(planBalance(p))}</p>`:''}
+    <div class="line"><h2>${p?'بنود مرتبطة بخطة '+esc(planLabel(p)):'جميع البنود'}</h2>
+      ${p?button('كل البنود',"go('items')"):''}</div>
+    <p class="note">أنشئ البنود مستقلّة عن الخطط. افتح «عرض الدفعات» لتحديد خطة مستقلة لكل دفعة، أو لتعديل نوعها.</p>
+    ${p?`<p class="muted">الرصيد النقدي: ${money(planBalance(p))} · المخصص: ${money(commitmentsForPlan(p.id))}</p>`:''}
   </div>
-  ${p&&inherited.length?`<div class="card">
-    <h3>دفعات مجدولة لهذا الشهر من خطط أخرى — ${monthName(planMonth(p))}</h3>
-    <p class="note">تظهر هنا الدفعات المجدولة من خطط أخرى حتى تاريخ هذه الخطة، ويمكن سدادها من أي خطة متاحة.</p>
-    ${inherited.map(x=>`<div class="line">
-      <div><b>${esc(x.item.name)}</b><div class="muted">${instLabel(x.inst)} · من ${esc(planLabel(x.originPlan)||'خطة سابقة')} · أصل الدفعة ${money(x.inst.amount)}</div></div>
-      <div style="text-align:left"><b>${money(x.remaining)}</b><div>${button('سداد',`pay('${x.item.id}','${p.id}','${x.inst.id}')`,'small')}</div></div>
-    </div>`).join('')}
-  </div>`:''}
   ${its.map(i=>{
-    const origin=db.plans.find(x=>x.id===i.planId), bal=scheduleBalances(i);
-    const displaySchedule=itemSchedule(i).slice(0,isCard(i)?13:500);
-    return `<div class="card">
-      <div class="line">
-        <div><b>${esc(i.name)}</b><div class="muted">${esc(planLabel(origin))}${isCard(i)?' · بطاقة ائتمانية (5% من المتبقي)':''}</div></div>
-        <span class="tag">${remaining(i)===0?'مسدد':paidFor(i)>0?'جزئي':'غير مسدد'}</span>
-      </div>
+    const bal=scheduleBalances(i);
+    const all=itemSchedule(i).filter(d=>!p||linkedPlanId(i,d)===p.id).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
+    return `<div class="card" id="item-${esc(i.id)}">
+      <div class="line"><div><b>${esc(i.name)}</b><div class="muted">${isCard(i)?'بطاقة ائتمانية · حد أدنى ثم 5%':'التزام عادي'}</div></div>
+        <span class="tag">${remaining(i)===0?'مسدد':paidFor(i)>0?'جزئي':'غير مسدد'}</span></div>
       ${i.note?`<p class="note">${esc(i.note)}</p>`:''}
-      <div class="grid">
-        <div class="stat"><span class="muted">قيمة البند</span><b>${money(i.amount)}</b></div>
-        <div class="stat"><span class="muted">المتبقي</span><b>${money(remaining(i))}</b></div>
-      </div>
-      ${displaySchedule.sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b))).map(d=>`<div class="line"><span>${instLabel(d)} <small class="muted">${money(d.amount)}</small></span><span>${money(bal[d.id]?.remaining??d.amount)} متبقٍ</span></div>`).join('')}
-      ${isCard(i)?'<p class="note">الدفعة الأولى ثابتة؛ الدفعات التالية توقعات 5% من الرصيد بعد السداد المجدول. لا تشمل فوائد أو رسومًا أو مشتريات جديدة، ولا تُعد مدفوعة حتى تسجلها.</p>':''}
-      <div class="actions">
-        ${button('تسجيل سداد',`pay('${i.id}','${p?.id||''}')`,'')}
-        ${button('تعديل',`editItem('${i.id}')`)}
-        ${button('سجل السداد',`history('${i.id}')`)}
-        ${button('حذف',`deleteItem('${i.id}')`,'danger')}
-      </div>
+      <div class="grid"><div class="stat"><span class="muted">قيمة البند</span><b>${money(i.amount)}</b></div>
+        <div class="stat"><span class="muted">المتبقي</span><b>${money(remaining(i))}</b></div></div>
+      <details class="installments" ${expandedInstallments.has(i.id)?'open':''} ontoggle="toggleInstallments('${i.id}',this)"><summary>عرض الدفعات (${all.length})</summary>
+        ${expandedInstallments.has(i.id)?all.map(d=>{
+          const pl=linkedPlanId(i,d),left=bal[d.id]?.remaining??d.amount;
+          return `<div class="installment-row"><div class="line"><div><b>${instLabel(d)}</b>
+            <div class="muted">قيمة الدفعة: ${money(d.amount)}</div></div><span class="pill">المتبقي ${money(left)}</span></div>
+            <div class="two"><div><label>نوع الدفعة</label>
+              <select onchange="changeInstallmentKind('${i.id}','${d.id}',this.value)">
+                <option value="regular" ${installmentKind(d)==='regular'?'selected':''}>قسط عادي</option>
+                <option value="arrears" ${installmentKind(d)==='arrears'?'selected':''}>متأخرات</option>
+              </select></div>
+              <div><label>ربط الدفعة بخطة</label><select onchange="linkInstallment('${i.id}','${d.id}',this.value)">
+                ${fundingSelectOptions(pl)}</select></div></div>
+            <p class="note">${pl?'مرتبطة: '+esc(fundingLabel(pl)):'غير مرتبطة بخطة'}${left>0?' · لا يُخصم إلا عند السداد':''}</p>
+            ${left>0?`<div class="actions">${button('تسجيل سداد الدفعة',`pay('${i.id}','${pl}','${d.id}')`,'small')}</div>`:''}
+          </div>`;
+        }).join('')||'<p class="note">لا توجد دفعات. اضغط تعديل لإضافتها.</p>':''}
+        ${isCard(i)?'<p class="note">دفعات البطاقة المستقبلية تقديرية بنسبة 5% من الرصيد المتبقي، وتتغير إذا سددت أكثر من الحد الأدنى.</p>':''}
+      </details>
+      <div class="actions">${button('تسجيل سداد',`pay('${i.id}')`,'')}
+        ${button('تعديل',`editItem('${i.id}')`)}${button('سجل السداد',`history('${i.id}')`)}
+        ${button('حذف',`deleteItem('${i.id}')`,'danger')}</div>
     </div>`;
-  }).join('')||(!p||!inherited.length?'<div class="card">لا توجد بنود بعد.</div>':'')}`;
+  }).join('')||'<div class="card">لا توجد بنود مرتبطة بهذا العرض.</div>'}
+  <div class="item-list-pad"></div><button type="button" class="quickAdd" onclick="editItem()">＋ إضافة بند</button>`;
 }
-
+function linkInstallment(iid,instId,planId){
+  const item=db.items.find(i=>i.id===iid),inst=item&&itemSchedule(item).find(d=>d.id===instId);
+  if(!item||!inst)return alert('الدفعة غير موجودة');
+  if(planId&&!db.plans.some(p=>p.id===planId))return alert('الخطة المختارة غير موجودة');
+  const oldId=linkedPlanId(item,inst);
+  if(isCard(item)&&inst.id!==item.schedule[0]?.id){
+    item.installmentFunding={...(item.installmentFunding||{}),[instId]:planId};
+  }else{
+    const saved=item.schedule.find(d=>d.id===instId);
+    saved.fundingPlanId=planId;
+  }
+  const bad=fundingOverdrawn();
+  if(bad){
+    if(isCard(item)&&inst.id!==item.schedule[0]?.id){
+      if(oldId)item.installmentFunding[instId]=oldId;else delete item.installmentFunding[instId];
+    }else item.schedule.find(d=>d.id===instId).fundingPlanId=oldId;
+    render();alert('لا يمكن ربط الدفعة: المبلغ المخصص يتجاوز المتاح في خطة «'+planLabel(bad)+'».');return;
+  }
+  save();
+}
+function changeInstallmentKind(iid,instId,kind){
+  const item=db.items.find(i=>i.id===iid);
+  if(!item||!['regular','arrears'].includes(kind))return;
+  const row=item.schedule.find(d=>d.id===instId);
+  if(row)row.kind=kind;
+  else if(isCard(item))item.installmentKinds={...(item.installmentKinds||{}),[instId]:kind};
+  save();
+}
 function openPlan(x){active=x;tab='items';render()}
-function show(html){const m=document.getElementById('modal');m.innerHTML=`<button type="button" class="modalClose" aria-label="إغلاق" onclick="dismissModal(event)">×</button>${html}`;m.showModal()}
+function show(html){const m=document.getElementById('modal');m.innerHTML=`<button type="button" class="modalClose" aria-label="إغلاق" onclick="dismissModal(event)">×</button>${html}`;m.showModal();m.scrollTop=0}
 function dismissModal(e){if(e){e.preventDefault();e.stopPropagation()}const m=document.getElementById('modal');if(m.open)m.close();m.innerHTML=''}
 document.getElementById('modal').addEventListener('cancel',e=>{e.preventDefault();dismissModal(e)});
 
@@ -376,7 +475,7 @@ function editPlan(pid){
     <label>ترحيل من خطة سابقة (اختياري)</label>
     <select name="carryFromPlanId" id="carrySource">
       <option value="">بدون ترحيل</option>
-      ${sources.map(x=>`<option value="${x.id}" ${p?.carryFromPlanId===x.id?'selected':''}>${esc(x.name||dateName(planDate(x)))} — المتبقي ${money(availableForCarry(x.id,pid))}</option>`).join('')}
+      ${sources.map(x=>`<option value="${x.id}" ${p?.carryFromPlanId===x.id?'selected':''}>${esc(x.name||dateName(planDate(x)))} — غير مخصص ${money(availableForCarry(x.id,pid)-commitmentsForPlan(x.id))}</option>`).join('')}
     </select>
     <label>المبلغ المرحّل</label>
     <input name="carry" type="number" inputmode="decimal" min="0" step="0.01" value="${p?.carry||0}">
@@ -389,7 +488,7 @@ function refreshCarrySources(pid){
   if(!sel)return;
   const current=sel.value;
   const sources=[...db.plans].filter(x=>x.id!==pid && planDate(x)<date).sort((a,b)=>planDate(b).localeCompare(planDate(a)));
-  sel.innerHTML='<option value="">بدون ترحيل</option>'+sources.map(x=>`<option value="${x.id}" ${current===x.id?'selected':''}>${esc(x.name||dateName(planDate(x)))} — المتبقي ${money(availableForCarry(x.id,pid))}</option>`).join('');
+  sel.innerHTML='<option value="">بدون ترحيل</option>'+sources.map(x=>`<option value="${x.id}" ${current===x.id?'selected':''}>${esc(x.name||dateName(planDate(x)))} — غير مخصص ${money(availableForCarry(x.id,pid)-commitmentsForPlan(x.id))}</option>`).join('');
 }
 function submitPlan(pid){
   const f=document.getElementById('f'),v=Object.fromEntries(new FormData(f));
@@ -401,7 +500,10 @@ function submitPlan(pid){
     if(carry>availableForCarry(v.carryFromPlanId,pid)+0.001)return alert('المبلغ المرحّل أكبر من المتبقي في الخطة المصدر');
   }
   let p=db.plans.find(x=>x.id===pid);
+  const previousPlan=p?{...p}:null;
   if(p){
+    const firstPayment=[...db.payments].filter(x=>x.planId===pid).sort((a,b)=>a.date.localeCompare(b.date))[0];
+    if(firstPayment&&v.date>firstPayment.date)return alert('لا يمكن تأخير تاريخ توفر مبلغ الخطة إلى ما بعد سداد مسجل منها');
     const dependents=db.plans.filter(x=>x.carryFromPlanId===pid && Number(x.carry||0)>0);
     if(dependents.some(x=>v.date>=planDate(x)))return alert('هذه الخطة مصدر ترحيل لخطة أحدث؛ لا يمكن جعل تاريخها مساويًا لها أو أحدث منها');
     const outgoing=dependents.reduce((sum,x)=>sum+Number(x.carry||0),0);
@@ -417,46 +519,46 @@ function submitPlan(pid){
     note:v.note||'',
     carryFromPlanId:v.carryFromPlanId||'' 
   });
+  const bad=fundingOverdrawn();
+  if(bad){
+    if(previousPlan)Object.assign(p,previousPlan);
+    else db.plans=db.plans.filter(x=>x.id!==p.id);
+    alert('المبلغ المتاح لا يكفي للدفعات التي ربطتها بخطة «'+planLabel(bad)+'». عدّل الربط أو المبلغ أولًا.');return;
+  }
   dismissModal();save();
 }
 
-function editItem(iid,pid){
+function editItem(iid=''){
+  planAvailabilityCache=new Map();
   const i=db.items.find(x=>x.id===iid);
-  if(!db.plans.length)return alert('أضف خطة أولًا');
-  show(`<h2>${i?'تعديل بند':'إضافة بند'}</h2>
+  show(`<h2>${i?'تعديل بند':'إضافة بند مستقل'}</h2>
   <form id="f" onsubmit="event.preventDefault();submitItem('${iid||''}')">
-    <label>الخطة</label>
-    <select name="planId" required>
-      ${[...db.plans].sort((a,b)=>planDate(b).localeCompare(planDate(a))).map(p=>`<option value="${p.id}" ${p.id===(i?.planId||pid)?'selected':''}>${esc(planLabel(p))} — ${dateName(planDate(p))}</option>`).join('')}
+    <label>اسم البند</label><input name="name" required value="${esc(i?.name||'')}" placeholder="مثلاً إمكان 1">
+    <label>نوع البند</label><select name="type" onchange="toggleItemType()">
+      <option value="general" ${!isCard(i)?'selected':''}>التزام عادي</option>
+      <option value="card" ${isCard(i)?'selected':''}>بطاقة ائتمانية (5% بعد الدفعة الأولى)</option>
     </select>
-    <label>اسم البند</label>
-    <input name="name" required value="${esc(i?.name||'')}">
-    <label>نوع البند</label>
-    <select name="type" onchange="toggleItemType()">
-      <option value="general" ${!isCard(i)?'selected':''}>بند عادي / تمويل</option>
-      <option value="card" ${isCard(i)?'selected':''}>بطاقة ائتمانية — الحد الأدنى ثم 5% متناقص</option>
-    </select>
-    <label>المبلغ الإجمالي</label>
+    <label>القيمة الإجمالية للبند</label>
     <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${i?.amount||''}">
-    <label>ملاحظة (اختياري)</label>
-    <input name="note" value="${esc(i?.note||'')}" placeholder="مثلاً: يستمر حتى الإغلاق الفعلي">
+    <label>ملاحظة (اختياري)</label><input name="note" value="${esc(i?.note||'')}">
     <div id="cardFields" ${!isCard(i)?'hidden':''}>
       <h3>الدفعة الأولى للبطاقة</h3>
-      <label>الشهر</label>
-      <input name="cardFirstMonth" type="month" value="${i?.schedule?.[0]?.month||localToday().slice(0,7)}">
+      <label>الشهر</label><input name="cardFirstMonth" type="month" value="${i?.schedule?.[0]?.month||localToday().slice(0,7)}">
       <label>يوم الاستحقاق (اختياري)</label>
-      <input name="cardFirstDay" type="number" inputmode="numeric" min="1" max="31" step="1" value="${i?.schedule?.[0]?.date?.slice(-2)||''}" placeholder="أدخل اليوم إن كان معلومًا">
-      <label>الحد الأدنى المطلوب للدفعة الأولى</label>
-      <input name="cardFirstMinimum" type="number" inputmode="decimal" min="0.01" step="0.01" value="${isCard(i)?i.schedule[0]?.amount??'':''}" placeholder="مثلاً 9,922.13">
-      <p class="note">بعد الدفعة الأولى تُحسب الدفعات تلقائيًا بنسبة 5% من الرصيد المتبقي، بافتراض سداد الدفعات المجدولة. يمكنك تسجيل مبلغ سداد أكبر ويتغير حساب الشهور اللاحقة تلقائيًا. تقدير دون فوائد أو رسوم أو مشتريات جديدة.</p>
+      <input name="cardFirstDay" type="number" inputmode="numeric" min="1" max="31" step="1" value="${i?.schedule?.[0]?.date?.slice(-2)||''}">
+      <label>الحد الأدنى للدفعة الأولى</label>
+      <input name="cardFirstMinimum" type="number" inputmode="decimal" min="0.01" step="0.01" value="${isCard(i)?i.schedule[0]?.amount??'':''}">
+      <label>ربط الدفعة الأولى بخطة (اختياري)</label>
+      <select name="cardFirstFundingPlanId">${fundingSelectOptions(i?.schedule?.[0]?.fundingPlanId||'')}</select>
+      <p class="note">بعد الدفعة الأولى، تُحسب دفعات البطاقة تلقائيًا بنسبة 5% شهريًا. تربط كل دفعة لاحقة بخطتها من «عرض الدفعات» بعد حفظ البند.</p>
     </div>
     <div id="regularFields" ${isCard(i)?'hidden':''}>
-      <h3>الدفعات المجدولة (اختياري)</h3>
-      <div id="schedule">${(i?.schedule||[]).map(d=>scheduleRow(d.month,d.amount,d.id,d.date||'',d.label||'')).join('')}</div>
-      ${button('+ دفعة','addSchedule()')}
-      <p class="note">حدد شهر الدفعة ويومها إن كان معروفًا. اترك خانة اليوم فارغة إذا كان تاريخ الاستحقاق غير مؤكد. يمكنك إضافة متأخرات ودفعة عادية في الشهر نفسه.</p>
+      <h3>الدفعات (اختياري)</h3>
+      <div id="schedule">${(i&&!isCard(i)?i.schedule:[]).map(d=>scheduleRow(d.month,d.amount,d.id,d.date||'',d.label||'',installmentKind(d),linkedPlanId(i,d))).join('')}</div>
+      ${button('＋ إضافة دفعة','addSchedule()')}
+      <p class="note">أضف دفعاتك واختر نوع كل واحدة وخطتها. يمكن تركها بدون ربط والرجوع إليها لاحقًا.</p>
     </div>
-    <div class="actions"><button type="submit">حفظ البند</button>${button('إلغاء','dismissModal(event)')}</div>
+    <div class="actions"><button type="submit">${i?'حفظ التعديل':'إضافة البند'}</button>${button('إلغاء','dismissModal(event)')}</div>
   </form>`);
   toggleItemType();
 }
@@ -469,61 +571,74 @@ function toggleItemType(){
   for(const field of document.querySelectorAll('#cardFields input'))field.disabled=!card;
   for(const field of document.querySelectorAll('#regularFields input'))field.disabled=card;
 }
-function scheduleRow(month='',amount='',sid='',date='',label=''){
+function scheduleRow(month='',amount='',sid='',date='',label='',kind='regular',fundingPlanId=''){
   const day=date?Number(date.slice(-2)):'';
+  const chosen=kind==='arrears'||/متأخر/.test(label)?'arrears':'regular';
   return `<div class="schedule-entry" style="padding:10px;margin:10px 0;border:1px solid #d8e2e9;border-radius:11px" data-id="${sid}">
-    <div class="two">
-      <div><label>الشهر</label><input type="month" class="sm" value="${month}"></div>
-      <div><label>يوم الاستحقاق (اختياري)</label><input type="number" inputmode="numeric" class="sd" min="1" max="31" step="1" placeholder="مثلاً 27" value="${day}"></div>
-    </div>
-    <div class="two">
-      <div><label>مبلغ الدفعة</label><input type="number" inputmode="decimal" class="sa" placeholder="المبلغ" min="0.01" step="0.01" value="${amount}"></div>
-      <div><label>نوع الدفعة</label><input class="sl" maxlength="120" value="${esc(label)}" placeholder="متأخرات / قسط"></div>
-    </div>
+    <div class="two"><div><label>الشهر</label><input type="month" class="sm" value="${month}"></div>
+      <div><label>يوم الاستحقاق (اختياري)</label><input type="number" inputmode="numeric" class="sd" min="1" max="31" step="1" value="${day}"></div></div>
+    <div class="two"><div><label>مبلغ الدفعة</label><input type="number" inputmode="decimal" class="sa" min="0.01" step="0.01" value="${amount}"></div>
+      <div><label>نوع الدفعة</label><select class="sk">
+        <option value="regular" ${chosen==='regular'?'selected':''}>قسط عادي</option>
+        <option value="arrears" ${chosen==='arrears'?'selected':''}>متأخرات</option>
+      </select></div></div>
+    <label>ربط الدفعة بخطة (اختياري)</label><select class="sp">${fundingSelectOptions(fundingPlanId)}</select>
     <div class="actions"><button type="button" class="danger small" onclick="this.closest('.schedule-entry').remove()">حذف الدفعة</button></div>
   </div>`;
 }
 function addSchedule(){document.getElementById('schedule').insertAdjacentHTML('beforeend',scheduleRow())}
 function submitItem(iid){
   const f=document.getElementById('f'),v=Object.fromEntries(new FormData(f));
-  const type=v.type==='card'?'card':'general', amount=Number(v.amount);
+  const type=v.type==='card'?'card':'general',amount=Number(v.amount);
   const old=db.items.find(x=>x.id===iid);
+  if(!Number.isFinite(amount)||amount<=0)return alert('أدخل قيمة إجمالية صحيحة للبند');
   let schedule=[];
   if(type==='card'){
     const month=v.cardFirstMonth,day=v.cardFirstDay;
-    if(!validMonth(month)||!(Number(v.cardFirstMinimum)>0)||!Number.isFinite(amount))return alert('أدخل شهر الدفعة الأولى والحد الأدنى');
+    if(!validMonth(month)||!(Number(v.cardFirstMinimum)>0))return alert('أدخل شهر الدفعة الأولى والحد الأدنى');
     const date=day?month+'-'+String(Number(day)).padStart(2,'0'):'';
     if(date&&!validDate(date))return alert('تاريخ الدفعة الأولى غير صحيح');
-    if(Number(v.cardFirstMinimum)>amount+0.001)return alert('الحد الأدنى الأول لا يمكن أن يتجاوز مديونية البطاقة');
-    schedule=[{id:old?.schedule?.[0]?.id||id(),month,date,label:'الحد الأدنى الأول (ثابت)',amount:cents(v.cardFirstMinimum)}];
+    if(Number(v.cardFirstMinimum)>amount+0.001)return alert('الحد الأدنى الأول أكبر من مديونية البطاقة');
+    schedule=[{id:old?.schedule?.[0]?.id||id(),month,date,kind:'regular',label:'الحد الأدنى الأول (ثابت)',amount:cents(v.cardFirstMinimum),fundingPlanId:v.cardFirstFundingPlanId||''}];
   }else{
-    const rows=[...document.querySelectorAll('#schedule .schedule-entry')];
-    schedule=rows.map(r=>{
-      const month=r.querySelector('.sm').value, day=r.querySelector('.sd').value;
+    schedule=[...document.querySelectorAll('#schedule .schedule-entry')].map(r=>{
+      const month=r.querySelector('.sm').value,day=r.querySelector('.sd').value;
       const date=day?month+'-'+String(Number(day)).padStart(2,'0'):'';
-      return {id:r.dataset.id||id(),month,date,label:r.querySelector('.sl').value.trim(),amount:Number(r.querySelector('.sa').value)};
+      const kind=r.querySelector('.sk').value;
+      return {id:r.dataset.id||id(),month,date,kind,label:kind==='arrears'?'متأخرات':'قسط',amount:Number(r.querySelector('.sa').value),fundingPlanId:r.querySelector('.sp').value};
     });
   }
-  if(schedule.some(d=>!validMonth(d.month)||!(d.amount>0)||!Number.isFinite(d.amount)||(d.date&&!validDate(d.date))))return alert('تحقق من شهر الدفعة ويومها ومبلغها');
+  if(schedule.some(d=>!validMonth(d.month)||!(d.amount>0)||!Number.isFinite(d.amount)||(d.date&&!validDate(d.date))))return alert('تحقق من الشهر واليوم ومبلغ الدفعة');
   if(schedule.reduce((s,d)=>s+d.amount,0)>amount+0.001)return alert('مجموع الدفعات أكبر من قيمة البند');
-  if(old && amount<paidFor(old)-0.001)return alert('قيمة البند أقل من المسدد بالفعل');
+  if(schedule.some(d=>d.fundingPlanId&&!db.plans.some(p=>p.id===d.fundingPlanId)))return alert('إحدى الخطط المختارة غير موجودة');
+  if(old&&amount<paidFor(old)-0.001)return alert('قيمة البند أقل من مجموع السداد الفعلي');
   if(old){
     const itemPayments=db.payments.filter(p=>p.itemId===old.id);
-    if(itemPayments.length && v.planId!==old.planId)return alert('لا يمكن نقل بند له سداد مسجل إلى خطة أخرى');
-    if(itemPayments.length && type!==old.type && (type==='card'||old.type==='card'))return alert('لا يمكن تغيير نوع البند بعد تسجيل سداد عليه');
-    if(isCard(old)&&itemPayments.length&&type==='card' && (old.schedule[0]?.month!==schedule[0]?.month || old.schedule[0]?.date!==schedule[0]?.date))return alert('لا يمكن تعديل تاريخ أول استحقاق بعد تسجيل سداد للبطاقة');
+    if(itemPayments.length&&type!==old.type&&(type==='card'||old.type==='card'))return alert('لا يمكن تغيير نوع البند بعد تسجيل سداد عليه');
+    if(isCard(old)&&itemPayments.length&&type==='card'&&(old.schedule[0]?.month!==schedule[0]?.month||old.schedule[0]?.date!==schedule[0]?.date))return alert('لا يمكن تغيير تاريخ أول استحقاق بعد سداد البطاقة');
     const paidIds=new Set(itemPayments.filter(p=>p.installmentId).map(p=>p.installmentId));
     const keptIds=new Set(schedule.map(d=>d.id));
-    if(type!=='card' && [...paidIds].some(x=>!keptIds.has(x)))return alert('لا يمكن حذف دفعة مرتبطة بسداد مسجل. احذف سجل السداد أولًا');
+    if(type!=='card'&&[...paidIds].some(x=>!keptIds.has(x)))return alert('لا يمكن حذف دفعة سبق السداد منها؛ احذف سجل السداد أولًا');
     for(const d of schedule){
-      const linked=itemPayments.filter(p=>p.installmentId===d.id).reduce((sum,p)=>sum+Number(p.amount||0),0);
-      if(d.amount<linked-0.001)return alert('قيمة إحدى الدفعات أقل من مبلغ مسدد ومسجل عليها');
+      const paid=itemPayments.filter(p=>p.installmentId===d.id).reduce((t,p)=>t+Number(p.amount||0),0);
+      if(d.amount<paid-0.001)return alert('قيمة دفعة أقل مما سُدد عليها');
     }
   }
   const record=old||{id:id()};
-  Object.assign(record,{planId:v.planId,name:v.name,note:v.note||'',amount:cents(amount),schedule,type,...(type==='card'?{cardRate:5}:{cardRate:undefined})});
+  const before=old?{...old}:null;
+  const next={planId:old?.planId||'',name:v.name,note:v.note||'',amount:cents(amount),schedule,type,
+    ...(type==='card'?{cardRate:5,installmentFunding:old?.installmentFunding||{},installmentKinds:old?.installmentKinds||{}}:{cardRate:undefined,installmentFunding:{},installmentKinds:{}})};
+  Object.assign(record,next);
   if(!old)db.items.push(record);
-  dismissModal();save();
+  const bad=fundingOverdrawn();
+  if(bad){
+    if(old)Object.assign(record,before);else db.items=db.items.filter(i=>i!==record);
+    alert('لا توجد سيولة غير مخصصة كافية في خطة «'+planLabel(bad)+'» لربط هذه الدفعات. اختر خطة أخرى أو اترك الدفعة دون ربط.');return;
+  }
+  dismissModal();
+  active=null;tab='items';save();
+  const node=document.getElementById('item-'+record.id);
+  if(node&&!old)requestAnimationFrame(()=>node.scrollIntoView({behavior:'instant',block:'center'}));
 }
 function pay(iid,preferredPlanId='',preferredInstId=''){
   const i=db.items.find(x=>x.id===iid);
@@ -538,13 +653,14 @@ function pay(iid,preferredPlanId='',preferredInstId=''){
   const paymentDate=localToday();
   const funding=fundingPlansFor(paymentDate);
   if(!funding.length)return alert('لا توجد خطة متاحة بتاريخ اليوم وبها رصيد للسداد');
-  const preferred=funding.find(p=>p.id===preferredPlanId)||funding.find(p=>p.id===i.planId)||funding[0];
+  const linked=first?linkedPlanId(i,first):'';
+  const preferred=funding.find(p=>p.id===(preferredPlanId||linked))||funding.find(p=>p.id===linked)||funding.find(p=>p.id===i.planId)||funding[0];
   const instLeft=first?(bal[first.id]?.remaining??Number(first.amount||0)):left;
   const defaultAmount=Math.min(left,planBalance(preferred),instLeft);
   const options=unpaid.map(d=>`<option value="${d.id}" ${first?.id===d.id?'selected':''}>${instLabel(d)} — متبقي ${money(bal[d.id]?.remaining??d.amount)}</option>`).join('');
   show(`<h2>سداد: ${esc(i.name)}</h2>
     <p>المتبقي على البند: <b>${money(left)}</b></p>
-    <form id="f" onsubmit="event.preventDefault();submitPay('${iid}')">
+    <form id="f" data-item-id="${iid}" onsubmit="event.preventDefault();submitPay('${iid}')">
       <label>تاريخ السداد</label>
       <input name="date" type="date" required value="${paymentDate}" onchange="refreshFundingPlans('${preferred.id}')">
       <label>السداد من أي خطة؟</label>
@@ -554,13 +670,23 @@ function pay(iid,preferredPlanId='',preferredInstId=''){
       <label>المبلغ المدفوع</label>
       <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${defaultAmount}">
       ${computedSchedule.length?`<label>الدفعة المرتبطة</label>
-      <select name="installmentId">
+      <select name="installmentId" onchange="refreshPaymentPlanChoice()">
         ${options}
         <option value="">سداد عام للبند — يُوزع على أقدم دفعة غير مسددة</option>
       </select>`:'<input type="hidden" name="installmentId" value="">'}
       <p class="note">يمكن سداد بند قديم من خطة أحدث طالما أن مبلغ الخطة متوفر في تاريخ السداد.</p>
       <div class="actions"><button type="submit">تأكيد السداد</button>${button('إلغاء','dismissModal(event)')}</div>
     </form>`);
+}
+function refreshPaymentPlanChoice(){
+  const f=document.getElementById('f');if(!f)return;
+  const select=f.querySelector('[name="installmentId"]'),plan=f.querySelector('[name="fundingPlanId"]');
+  if(!select||!plan||!select.value)return;
+  const iid=f.dataset.itemId;
+  const item=db.items.find(i=>i.id===iid);
+  const inst=item&&itemSchedule(item).find(d=>d.id===select.value);
+  const pid=inst?linkedPlanId(item,inst):'';
+  if(pid&&[...plan.options].some(o=>o.value===pid))plan.value=pid;
 }
 function refreshFundingPlans(preferredId=''){
   const f=document.getElementById('f'), sel=document.getElementById('fundingPlan');
@@ -584,7 +710,13 @@ function submitPay(iid){
     const left=installmentRemaining(i,v.installmentId);
     if(amount>left+0.001)return alert('المبلغ أكبر من المتبقي على الدفعة المحددة');
   }
-  db.payments.push({id:id(),itemId:iid,planId:p.id,amount,date:v.date,installmentId:v.installmentId||''});
+  const payment={id:id(),itemId:iid,planId:p.id,amount:cents(amount),date:v.date,installmentId:v.installmentId||''};
+  db.payments.push(payment);
+  const bad=fundingOverdrawn();
+  if(bad){
+    db.payments=db.payments.filter(x=>x.id!==payment.id);
+    alert('هذا السداد سيستهلك مبلغًا مخصصًا لدفعات أخرى في خطة «'+planLabel(bad)+'». عدّل ربط الدفعات أولًا.');return;
+  }
   dismissModal();save();
 }
 function history(iid){
@@ -605,14 +737,14 @@ function deleteItem(iid){
   }
 }
 function deletePlan(pid){
-  if(db.plans.some(p=>p.carryFromPlanId===pid && Number(p.carry||0)>0))return alert('لا يمكن حذف هذه الخطة لأنها مصدر لمبلغ مرحّل إلى خطة أخرى');
-  if(db.payments.some(p=>p.planId===pid))return alert('لا يمكن حذف هذه الخطة لأن هناك عمليات سداد خرجت من مبلغها. احذف سجلات السداد المرتبطة أولًا');
-  if(confirm('حذف الخطة وبنودها؟ سيتم أيضًا حذف أي سجلات سداد مرتبطة بهذه البنود من خطط أخرى.')){
-    const ids=db.items.filter(i=>i.planId===pid).map(i=>i.id);
+  if(db.plans.some(p=>p.carryFromPlanId===pid&&Number(p.carry||0)>0))return alert('لا يمكن حذف خطة تم الترحيل منها');
+  if(db.payments.some(p=>p.planId===pid))return alert('لا يمكن حذف خطة سُجلت منها مدفوعات، احذف سجلات السداد أولًا');
+  const linked=db.items.some(item=>itemSchedule(item).some(d=>linkedPlanId(item,d)===pid));
+  if(linked)return alert('هذه الخطة مرتبطة بدفعات. فك ارتباطها من «البنود ← عرض الدفعات» قبل الحذف.');
+  if(confirm('حذف هذه الخطة فقط؟ ستبقى البنود والدفعات محفوظة.')){
     db.plans=db.plans.filter(p=>p.id!==pid);
-    db.items=db.items.filter(i=>i.planId!==pid);
-    db.payments=db.payments.filter(p=>!ids.includes(p.itemId));
-    save();
+    db.items.forEach(i=>{if(i.planId===pid)i.planId=''});
+    active=null;save();
   }
 }
 function resetApp(){
@@ -633,7 +765,7 @@ function resetApp(){
 let pendingImport=null;
 const MAX_IMPORT_BYTES=3*1024*1024;
 function exportData(){
-  const payload={format:'mabaleghi-data',schemaVersion:1,exportedAt:new Date().toISOString(),data:db};
+  const payload={format:'mabaleghi-data',schemaVersion:2,exportedAt:new Date().toISOString(),data:db};
   const fileName='mabaleghi-backup-'+localToday()+'.json';
   const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json;charset=utf-8'}));
   const link=document.createElement('a');
@@ -667,7 +799,7 @@ function textField(s,name,max=500){
 function normalizeDataFile(src){
   if(!src||typeof src!=='object'||Array.isArray(src))importErr('ملف البيانات غير صالح');
   if(src.format&&src.format!=='mabaleghi-data')importErr('هذا ليس ملف بيانات مبالغي');
-  if(src.schemaVersion&&Number(src.schemaVersion)>1)importErr('هذا الملف من إصدار أحدث وغير مدعوم');
+  if(src.schemaVersion&&Number(src.schemaVersion)>2)importErr('هذا الملف من إصدار أحدث وغير مدعوم');
   const raw=src.data||src;
   if(!raw||!Array.isArray(raw.plans)||!Array.isArray(raw.items)||!Array.isArray(raw.payments))importErr('يلزم وجود الخطط والبنود والمدفوعات الثلاثة');
   if(raw.plans.length>1500||raw.items.length>10000||raw.payments.length>20000)importErr('ملف البيانات كبير أكثر من الحد المدعوم');
@@ -685,14 +817,25 @@ function normalizeDataFile(src){
     const cardRate=type==='card'?Number(i.cardRate??5):undefined;
     if(type==='card'&&cardRate!==5)importErr('نسبة البطاقة المدعومة هي 5%');
     if(type==='card'&&i.schedule.length!==1)importErr('البطاقة تحتاج دفعة أولى ثابتة واحدة فقط؛ البقية تُحسب تلقائيًا');
-    return {id:fieldId(i.id,'البند'),planId:fieldId(i.planId,'خطة البند'),name:textField(i.name,'اسم البند',200),
+    const installmentFunding={};
+    const installmentKinds={};
+    for(const [key,value] of Object.entries(i.installmentFunding||{})){
+      installmentFunding[fieldId(key,'معرف دفعة البطاقة')]=value?fieldId(value,'خطة الدفعة'):'';
+    }
+    for(const [key,value] of Object.entries(i.installmentKinds||{})){
+      installmentKinds[fieldId(key,'معرف نوع دفعة')]=value==='arrears'?'arrears':'regular';
+    }
+    return {id:fieldId(i.id,'البند'),planId:i.planId?fieldId(i.planId,'خطة البند'):'',name:textField(i.name,'اسم البند',200),
+      installmentFunding,installmentKinds,
       type, ...(type==='card'?{cardRate:5}:{}),
       note:textField(i.note,'ملاحظة البند'),amount:moneyField(i.amount,'البند '+(n+1),false),
       schedule:i.schedule.map((d,j)=>{
         if(!d||!validMonth(d.month))importErr('شهر الدفعة غير صحيح في البند '+(n+1));
         const date=d.date||'';
         if(date&&(!validDate(date)||date.slice(0,7)!==d.month))importErr('تاريخ استحقاق الدفعة لا يطابق شهرها في البند '+(n+1));
-        return {id:fieldId(d.id,'الدفعة'),month:d.month,date,label:textField(d.label,'وصف الدفعة',120),amount:moneyField(d.amount,'دفعة '+(j+1),false)};
+        return {id:fieldId(d.id,'الدفعة'),month:d.month,date,label:textField(d.label,'وصف الدفعة',120),
+          kind:d.kind==='arrears'||(d.kind==null&&/متأخر/.test(String(d.label||'')))?'arrears':'regular',fundingPlanId:d.fundingPlanId?fieldId(d.fundingPlanId,'خطة الدفعة'):'',
+          amount:moneyField(d.amount,'دفعة '+(j+1),false)};
       })};
   }),payments:raw.payments.map((p,i)=>{
     if(!p||!validDate(p.date))importErr('تاريخ سداد غير صالح: '+(i+1));
@@ -719,14 +862,21 @@ function validateImportedData(model){
   }
   for(const i of model.items){
     if(itemIds.has(i.id))importErr('يوجد تكرار في معرفات البنود');
-    if(!plans.has(i.planId))importErr('بند يشير إلى خطة غير موجودة: '+i.name);
+    if(i.planId&&!plans.has(i.planId))importErr('بند يشير إلى خطة غير موجودة: '+i.name);
     itemIds.add(i.id);items.set(i.id,i);
     let scheduled=0;
     for(const d of i.schedule){
       if(installmentIds.has(d.id))importErr('تكرار معرف دفعة مجدولة');
+      if(d.fundingPlanId&&!plans.has(d.fundingPlanId))importErr('دفعة تشير إلى خطة غير موجودة');
       scheduled+=d.amount;installmentIds.add(d.id);installments.set(d.id,{d,itemId:i.id});
     }
     if(scheduled>i.amount+0.005)importErr('مجموع دفعات '+i.name+' يتجاوز قيمة البند');
+    for(const [instId,pid] of Object.entries(i.installmentFunding||{})){
+      if(pid&&!plans.has(pid))importErr('ربط دفعة بطاقة بخطة غير موجودة');
+      const prefix='card_'+i.id+'_';
+      const suffix=instId.startsWith(prefix)?instId.slice(prefix.length):'';
+      if(!isCard(i)||!/^[0-9]{6}$/.test(suffix)||!validMonth(suffix.slice(0,4)+'-'+suffix.slice(4)))importErr('معرف ربط دفعة بطاقة غير صحيح');
+    }
     if(isCard(i) && (i.schedule.length!==1||i.schedule[0].amount>i.amount+0.005))importErr('الحد الأدنى الأول للبطاقة غير صالح');
   }
   const itemPaid=new Map(),instPaid=new Map();
@@ -805,7 +955,11 @@ function applyImport(mode){
         }else if(mode==='update'&&key==='items'){
           const pos=result.items.findIndex(x=>x.id===rec.id);
           const old=result.items[pos];
-          result.items[pos]={...old,name:rec.name,amount:rec.amount,note:rec.note,schedule:rec.schedule,type:rec.type,cardRate:rec.cardRate};
+          const oldSchedule=new Map(old.schedule.map(d=>[d.id,d]));
+          const schedule=rec.schedule.map(d=>({...d,fundingPlanId:d.fundingPlanId||oldSchedule.get(d.id)?.fundingPlanId||''}));
+          result.items[pos]={...old,name:rec.name,amount:rec.amount,note:rec.note,schedule,type:rec.type,cardRate:rec.cardRate,
+            installmentFunding:{...(old.installmentFunding||{}),...(rec.installmentFunding||{})},
+            installmentKinds:{...(old.installmentKinds||{}),...(rec.installmentKinds||{})}};
           updatedItems++;
         }
       }
