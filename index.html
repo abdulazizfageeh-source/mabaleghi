@@ -54,6 +54,7 @@ h3{font-size:16px}
 <button id="tab-items" onclick="go('items')">البنود</button>
 </nav>
 <dialog id="modal"></dialog>
+<input id="importDataFile" type="file" accept=".json,application/json" style="display:none" onchange="readImportFile(this)">
 <script>
 const KEY='mabaleghi-v1';
 
@@ -211,6 +212,14 @@ function dashboard(){
     ${list.map(m=>`<div class="line"><span>${monthName(m)}</span><span>${money(due(m))} <small class="muted">مجدول غير مسدد</small></span></div>`).join('')}
   </div>
   <div class="card">
+    <h3>ملفات البيانات</h3>
+    <p class="note">استيراد خطط وبنود ودفعات من ملف JSON محفوظ على الآيفون، أو تصدير نسخة احتياطية من جميع بيانات مبالغي. لا تُرسل البيانات إلى الإنترنت.</p>
+    <div class="actions">
+      ${button('استيراد ملف بيانات',"document.getElementById('importDataFile').click()",'')}
+      ${button('تصدير نسخة احتياطية','exportData()')}
+    </div>
+  </div>
+  <div class="card">
     <h3>إعادة ضبط التطبيق</h3>
     <p class="note">يمسح جميع خطط وبنود وسجلات سداد تطبيق مبالغي فقط، ويعيده كأنه جديد.</p>
     <div class="actions">${button('مسح جميع بيانات مبالغي','resetApp()','danger')}</div>
@@ -234,6 +243,7 @@ function plans(){
         <div class="stat"><span class="muted">المتاح قبل السداد</span><b>${money(planMoney(p)-outgoingCarry(p.id))}</b></div>
         <div class="stat"><span class="muted">المسدد من الخطة</span><b>${money(totalPaid(p))}</b></div>
       </div>
+      ${p.note?`<p class="note">${esc(p.note)}</p>`:''}
       ${p.carryFromPlanId?`<p class="note">يتضمن ${money(p.carry)} مرحّلة من ${esc(planLabel(db.plans.find(x=>x.id===p.carryFromPlanId))||'خطة سابقة')}.</p>`:''}
       ${monthDue>0?`<p class="note">دفعات مجدولة غير مسددة في ${monthName(planMonth(p))}: <b>${money(monthDue)}</b>.</p>`:''}
       <div class="actions">
@@ -268,6 +278,7 @@ function items(){
         <div><b>${esc(i.name)}</b><div class="muted">${esc(planLabel(origin))}</div></div>
         <span class="tag">${remaining(i)===0?'مسدد':paidFor(i)>0?'جزئي':'غير مسدد'}</span>
       </div>
+      ${i.note?`<p class="note">${esc(i.note)}</p>`:''}
       <div class="grid">
         <div class="stat"><span class="muted">قيمة البند</span><b>${money(i.amount)}</b></div>
         <div class="stat"><span class="muted">المتبقي</span><b>${money(remaining(i))}</b></div>
@@ -300,6 +311,8 @@ function editPlan(pid){
     <input name="date" type="date" required value="${date}" onchange="refreshCarrySources('${pid||''}')">
     <label>المبلغ المتوفر</label>
     <input name="amount" type="number" inputmode="decimal" min="0" step="0.01" required value="${p?.amount??''}">
+    <label>ملاحظة (اختياري)</label>
+    <input name="note" value="${esc(p?.note||'')}" placeholder="مثلاً: مبلغ افتراضي إلى حين الاستلام">
     <label>ترحيل من خطة سابقة (اختياري)</label>
     <select name="carryFromPlanId" id="carrySource">
       <option value="">بدون ترحيل</option>
@@ -341,7 +354,8 @@ function submitPlan(pid){
     month:v.date.slice(0,7),
     amount,
     carry,
-    carryFromPlanId:v.carryFromPlanId||''
+    note:v.note||'',
+    carryFromPlanId:v.carryFromPlanId||'' 
   });
   dismissModal();save();
 }
@@ -359,6 +373,8 @@ function editItem(iid,pid){
     <input name="name" required value="${esc(i?.name||'')}">
     <label>المبلغ الإجمالي</label>
     <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${i?.amount||''}">
+    <label>ملاحظة (اختياري)</label>
+    <input name="note" value="${esc(i?.note||'')}" placeholder="مثلاً: يستمر حتى الإغلاق الفعلي">
     <h3>الدفعات المجدولة (اختياري)</h3>
     <div id="schedule">${(i?.schedule||[]).map(d=>scheduleRow(d.month,d.amount,d.id)).join('')}</div>
     ${button('+ دفعة','addSchedule()')}
@@ -396,7 +412,7 @@ function submitItem(iid){
     }
   }
   if(!i){i={id:id()};db.items.push(i)}
-  Object.assign(i,{planId:v.planId,name:v.name,amount:Number(v.amount),schedule});
+  Object.assign(i,{planId:v.planId,name:v.name,note:v.note||'',amount:Number(v.amount),schedule});
   dismissModal();save();
 }
 
@@ -497,11 +513,175 @@ function resetApp(){
   active=null;
   tab='dashboard';
   period='month';
-  anchor=localMonth();
+  anchor=localToday().slice(0,7);
   dismissModal();
   render();
   alert('تمت إعادة ضبط مبالغي ومسح جميع بياناته.');
 }
+
+// File import/export is intentionally offline and never auto-imports or auto-overwrites data.
+let pendingImport=null;
+const MAX_IMPORT_BYTES=3*1024*1024;
+function exportData(){
+  const payload={format:'mabaleghi-data',schemaVersion:1,exportedAt:new Date().toISOString(),data:db};
+  const fileName='mabaleghi-backup-'+localToday()+'.json';
+  const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json;charset=utf-8'}));
+  const link=document.createElement('a');
+  link.href=url;link.download=fileName;
+  document.body.appendChild(link);link.click();link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+}
+function importErr(message){throw new Error(message)}
+function moneyField(value,label,allowZero=true){
+  if(value===null||value===undefined||value==='')importErr('قيمة ناقصة: '+label);
+  const n=Number(value);
+  if(!Number.isFinite(n)||n<0||n>1e11||(!allowZero&&n<=0))importErr('مبلغ غير صحيح: '+label);
+  if(Math.abs(n-Math.round(n*100)/100)>0.00000001)importErr('المبلغ يجب ألا يتجاوز منزلتين عشريتين: '+label);
+  return Math.round(n*100)/100;
+}
+function validDate(s){
+  if(typeof s!=='string'||!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(s))return false;
+  const d=new Date(s+'T12:00:00');
+  return !isNaN(d)&&d.getFullYear()===Number(s.slice(0,4))&&d.getMonth()+1===Number(s.slice(5,7))&&d.getDate()===Number(s.slice(8,10));
+}
+function validMonth(s){return typeof s==='string'&&/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(s)}
+function fieldId(v,name){
+  if(typeof v!=='string'||!(/^[a-zA-Z0-9_-]{1,100}$/.test(v)))importErr('معرّف غير صالح: '+name);
+  return v;
+}
+function textField(s,name,max=500){
+  if(s==null)return '';
+  if(typeof s!=='string'||s.length>max)importErr('نص غير صالح: '+name);
+  return s;
+}
+function normalizeDataFile(src){
+  if(!src||typeof src!=='object'||Array.isArray(src))importErr('ملف البيانات غير صالح');
+  if(src.format&&src.format!=='mabaleghi-data')importErr('هذا ليس ملف بيانات مبالغي');
+  if(src.schemaVersion&&Number(src.schemaVersion)>1)importErr('هذا الملف من إصدار أحدث وغير مدعوم');
+  const raw=src.data||src;
+  if(!raw||!Array.isArray(raw.plans)||!Array.isArray(raw.items)||!Array.isArray(raw.payments))importErr('يلزم وجود الخطط والبنود والمدفوعات الثلاثة');
+  if(raw.plans.length>1500||raw.items.length>10000||raw.payments.length>20000)importErr('ملف البيانات كبير أكثر من الحد المدعوم');
+  const model={plans:raw.plans.map((p,i)=>{
+    if(!p||typeof p!=='object')importErr('بيانات خطة غير صحيحة');
+    const date=p.date||((p.month||'')+'-01');
+    if(!validDate(date))importErr('تاريخ خطة غير صحيح: '+(i+1));
+    const amount=moneyField(p.amount??0,'الخطة '+(i+1));
+    const carry=moneyField(p.carry??0,'ترحيل الخطة '+(i+1));
+    return {id:fieldId(p.id,'الخطة'),date,month:date.slice(0,7),name:textField(p.name,'اسم الخطة',200),
+      amount,carry,carryFromPlanId:p.carryFromPlanId?fieldId(p.carryFromPlanId,'مصدر الترحيل'):'',note:textField(p.note,'ملاحظة الخطة')};
+  }),items:raw.items.map((i,n)=>{
+    if(!i||typeof i!=='object'||!Array.isArray(i.schedule))importErr('جدول بند غير صالح: '+(n+1));
+    return {id:fieldId(i.id,'البند'),planId:fieldId(i.planId,'خطة البند'),name:textField(i.name,'اسم البند',200),
+      note:textField(i.note,'ملاحظة البند'),amount:moneyField(i.amount,'البند '+(n+1),false),
+      schedule:i.schedule.map((d,j)=>{
+        if(!d||!validMonth(d.month))importErr('شهر الدفعة غير صحيح في البند '+(n+1));
+        return {id:fieldId(d.id,'الدفعة'),month:d.month,amount:moneyField(d.amount,'دفعة '+(j+1),false)};
+      })};
+  }),payments:raw.payments.map((p,i)=>{
+    if(!p||!validDate(p.date))importErr('تاريخ سداد غير صالح: '+(i+1));
+    return {id:fieldId(p.id,'السداد'),planId:fieldId(p.planId,'خطة السداد'),itemId:fieldId(p.itemId,'بند السداد'),
+      installmentId:p.installmentId?fieldId(p.installmentId,'رقم الدفعة'):'',date:p.date,amount:moneyField(p.amount,'السداد '+(i+1),false)};
+  })};
+  validateImportedData(model);
+  return model;
+}
+function validateImportedData(model){
+  const planIds=new Set(),itemIds=new Set(),installmentIds=new Set(),paymentIds=new Set();
+  const plans=new Map(),items=new Map(),installments=new Map();
+  for(const p of model.plans){
+    if(planIds.has(p.id))importErr('يوجد تكرار في معرفات الخطط');
+    planIds.add(p.id);plans.set(p.id,p);
+  }
+  const out=new Map(),spent=new Map();
+  for(const p of model.plans){
+    if(p.carryFromPlanId){
+      const src=plans.get(p.carryFromPlanId);
+      if(!src||src.date>=p.date)importErr('ترحيل من خطة مفقودة أو تاريخها غير أقدم');
+      out.set(src.id,(out.get(src.id)||0)+p.carry);
+    }
+  }
+  for(const i of model.items){
+    if(itemIds.has(i.id))importErr('يوجد تكرار في معرفات البنود');
+    if(!plans.has(i.planId))importErr('بند يشير إلى خطة غير موجودة: '+i.name);
+    itemIds.add(i.id);items.set(i.id,i);
+    let scheduled=0;
+    for(const d of i.schedule){
+      if(installmentIds.has(d.id))importErr('تكرار معرف دفعة مجدولة');
+      scheduled+=d.amount;installmentIds.add(d.id);installments.set(d.id,{d,itemId:i.id});
+    }
+    if(scheduled>i.amount+0.005)importErr('مجموع دفعات '+i.name+' يتجاوز قيمة البند');
+  }
+  const itemPaid=new Map(),instPaid=new Map();
+  for(const p of model.payments){
+    if(paymentIds.has(p.id))importErr('تكرار رقم سداد');
+    paymentIds.add(p.id);
+    if(!plans.has(p.planId))importErr('سداد مرتبط بخطة غير موجودة');
+    if(!items.has(p.itemId))importErr('سداد مرتبط ببند غير موجود');
+    if(plans.get(p.planId).date>p.date)importErr('تاريخ سداد يسبق توفر مبلغ الخطة');
+    if(p.installmentId && installments.get(p.installmentId)?.itemId!==p.itemId)importErr('السداد مرتبط بدفعة لا تخص البند');
+    spent.set(p.planId,(spent.get(p.planId)||0)+p.amount);
+    itemPaid.set(p.itemId,(itemPaid.get(p.itemId)||0)+p.amount);
+    if(p.installmentId)instPaid.set(p.installmentId,(instPaid.get(p.installmentId)||0)+p.amount);
+  }
+  for(const [i,amount] of itemPaid){if(amount>items.get(i).amount+0.005)importErr('سداد يتجاوز قيمة البند: '+items.get(i).name)}
+  for(const [i,amount] of instPaid){if(amount>installments.get(i).d.amount+0.005)importErr('سداد يتجاوز قيمة الدفعة');}
+  for(const p of model.plans){
+    if(p.amount+p.carry-(out.get(p.id)||0)-(spent.get(p.id)||0)<-0.005)importErr('رصيد سالب في خطة: '+(p.name||p.date));
+  }
+}
+async function readImportFile(input){
+  const file=input.files&&input.files[0];
+  input.value='';
+  if(!file)return;
+  if(file.size>MAX_IMPORT_BYTES){alert('حجم الملف يتجاوز 3 ميجابايت');return;}
+  try{
+    const payload=JSON.parse(await file.text());
+    const imported=normalizeDataFile(payload);
+    pendingImport={model:imported,meta:payload.meta||{},name:file.name};
+    const m=pendingImport.meta, caution=m.illustrative?'هذه خطة مقترحة بأرقام افتراضية أو غير مؤكدة. لا تعتبر أي مبلغ مستلمًا أو أي بند مسددًا حتى تسجله بنفسك.':'';
+    const info=`${imported.plans.length} خطة، ${imported.items.length} بند، ${imported.payments.length} سداد مسجل`;
+    show(`<h2>معاينة الاستيراد</h2>
+      <p><b>${esc(textField(m.title||file.name,'عنوان الملف',200))}</b></p>
+      <p class="note">${esc(info)}</p>
+      ${caution?`<p class="note neg">${esc(caution)}</p>`:''}
+      <p class="note"><b>دمج:</b> يضيف العناصر الجديدة فقط، ولا يحذف بياناتك الموجودة ولا يكرر عناصر بنفس المعرّف.</p>
+      <p class="note"><b>استبدال:</b> يمسح بيانات مبالغي الحالية ويضع بيانات الملف مكانها. يُفضّل تصدير نسخة احتياطية أولًا.</p>
+      <div class="actions">
+        ${button('دمج بدون حذف','applyImport(\'merge\')','')}
+        ${button('استبدال كل البيانات','applyImport(\'replace\')','danger')}
+        ${button('نسخة احتياطية أولًا','exportData()')}
+        ${button('إلغاء','dismissModal(event)')}
+      </div>`);
+  }catch(err){pendingImport=null;alert('تعذر استيراد الملف: '+String(err.message||err).slice(0,210));}
+}
+function applyImport(mode){
+  if(!pendingImport)return alert('اختر ملفًا للاستيراد أولًا');
+  const source=pendingImport.model;
+  let result,added={plans:0,items:0,payments:0};
+  if(mode==='replace'){
+    if(!confirm('سيتم حذف كل بيانات مبالغي الحالية واستبدالها ببيانات الملف. هل أنت متأكد؟'))return;
+    if(!confirm('تأكيد أخير: هل تريد استبدال كل الخطط والبنود وسجلات السداد؟'))return;
+    result=source;
+  }else{
+    result={plans:[...db.plans],items:[...db.items],payments:[...db.payments]};
+    for(const key of ['plans','items','payments']){
+      const oldIds=new Set(result[key].map(x=>x.id));
+      for(const rec of source[key]){
+        if(!oldIds.has(rec.id)){
+          result[key].push(rec);oldIds.add(rec.id);added[key]++;
+        }
+      }
+    }
+    try{validateImportedData(result)}catch(err){alert('تعذر الدمج دون تعارض: '+err.message);return;}
+  }
+  try{localStorage.setItem(KEY,JSON.stringify(result));}
+  catch(err){alert('تعذر الحفظ على الجهاز؛ لم تتغير البيانات الأصلية. '+String(err.message||err).slice(0,100));return;}
+  db=result;pendingImport=null;active=null;tab='dashboard';
+  dismissModal();render();
+  if(mode==='replace')alert('تم استبدال بيانات مبالغي بالملف المستورد بنجاح.');
+  else alert(`تم الدمج: ${added.plans} خطة و${added.items} بند و${added.payments} عملية سداد جديدة.`);
+}
+
 if('serviceWorker'in navigator){
   let refreshing=false;
   navigator.serviceWorker.addEventListener('controllerchange',()=>{if(!refreshing){refreshing=true;location.reload()}});
