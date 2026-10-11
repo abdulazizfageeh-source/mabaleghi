@@ -56,6 +56,22 @@ h3{font-size:16px}
 .card-emphasis{border:1px solid #acd7d7}
 .full-line{margin-top:10px;padding-top:10px;border-top:1px solid #ecf0f4}
 @media(max-width:360px){.two{grid-template-columns:1fr}}
+
+/* متابعة الانتظام، مفصولة عن مجموع الديون وعن تقييمات الجهات الائتمانية */
+.stability{border:1px solid #d5e7e2}
+.stability-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.stability-state{font-size:12px;border-radius:999px;padding:6px 10px;background:#fff2dc;color:#8b5700;font-weight:700}
+.stability-state.clear{background:#e4f5ed;color:#176645}
+.stability-state.unknown{background:#edf2f6;color:#526779}
+.stability .stat b{font-size:18px}
+.stability h4{margin:16px 0 7px;font-size:14px}
+.stability .followup{margin-top:13px;padding:11px;border-radius:11px;background:#f3f7fa}
+.stability .progress{display:flex;gap:9px;align-items:center;justify-content:space-between;margin-top:14px}
+.stability .smallbar{height:9px;background:#e9eef2;overflow:hidden;border-radius:8px;margin:8px 0}
+.stability .smallbar>div{background:#218c78;height:100%;min-width:0;max-width:100%}
+.stability .hint{font-size:12px;color:#677b89;line-height:1.7}
+.stability .due-row{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid #edf1f4}
+.stability .due-row:last-child{border-bottom:0}
 </style>
 </head>
 <body>
@@ -294,6 +310,87 @@ function render(){
   container.innerHTML=tab==='dashboard'?dashboard():tab==='plans'?plans():items();
 }
 
+
+/* المقياس محلي ومن بيانات المستخدم فقط؛ لا يحسب درجة سمة ولا يفترض أن جميع التمويلات أُدخلت. */
+function plusCalendarDays(day,number){
+  const [y,m,d]=day.split('-').map(Number);
+  const next=new Date(y,m-1,d+number,12,0,0);
+  return `${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,'0')}-${String(next.getDate()).padStart(2,'0')}`;
+}
+function stabilitySummary(today=localToday()){
+  const through=plusCalendarDays(today,30);
+  const months=Array.from({length:3},(_,n)=>addMonths(ym(today),n));
+  const calendar=months.map(month=>({month,ordinary:0,cards:0}));
+  const summary={asOf:today,arrearsTotal:0,arrearsOpen:0,arrearsCount:0,lateRegular:0,lateCount:0,
+    upcomingRegular:0,upcomingCard:0,cardPast:0,cardBalance:0,undated:0,
+    tracked:0,nextRows:[],lateRows:[],calendar};
+  for(const item of db.items){
+    if(isCard(item))summary.cardBalance=cents(summary.cardBalance+remaining(item));
+    const schedules=itemSchedule(item),bal=scheduleBalances(item);
+    for(const inst of schedules){
+      const left=cents(Math.max(0,bal[inst.id]?.remaining??Number(inst.amount||0)));
+      const kind=installmentKind(inst);
+      const date=inst.date&&validDate(inst.date)?inst.date:'';
+      if(!isCard(item)&&kind==='arrears'){
+        summary.arrearsTotal=cents(summary.arrearsTotal+Number(inst.amount||0));
+        if(left>0){summary.arrearsOpen=cents(summary.arrearsOpen+left);summary.arrearsCount++;}
+        summary.tracked++;
+        continue;
+      }
+      if(left<0.005)continue;
+      if(!date){if(!isCard(item))summary.undated++;continue;}
+      if(!isCard(item))summary.tracked++;
+      if(date<today){
+        if(isCard(item))summary.cardPast=cents(summary.cardPast+left);
+        else{
+          summary.lateRegular=cents(summary.lateRegular+left);summary.lateCount++;
+          summary.lateRows.push({name:item.name,date,amount:left});
+        }
+      }else if(date<=through){
+        if(isCard(item))summary.upcomingCard=cents(summary.upcomingCard+left);
+        else summary.upcomingRegular=cents(summary.upcomingRegular+left);
+        summary.nextRows.push({name:item.name,date,amount:left,card:isCard(item)});
+      }
+      const slot=calendar.find(x=>x.month===inst.month);
+      if(slot){if(isCard(item))slot.cards=cents(slot.cards+left);else slot.ordinary=cents(slot.ordinary+left);}
+    }
+  }
+  summary.nextRows.sort((a,b)=>a.date.localeCompare(b.date));
+  summary.lateRows.sort((a,b)=>a.date.localeCompare(b.date));
+  summary.arrearsSettled=cents(Math.max(0,summary.arrearsTotal-summary.arrearsOpen));
+  summary.arrearsPct=summary.arrearsTotal>0?Math.min(100,Math.round(100*summary.arrearsSettled/summary.arrearsTotal)):null;
+  summary.flag=summary.arrearsOpen>0.005||summary.lateRegular>0.005?'attention':summary.tracked===0?'unknown':'clear';
+  return summary;
+}
+function regularityPanel(){
+  const st=stabilitySummary();
+  const status=st.flag==='attention'?'توجد استحقاقات تحتاج مراجعة':st.flag==='clear'?'لا تظهر متأخرات غير مسددة':'بيانات غير كافية';
+  const statusClass=st.flag==='clear'?'clear':st.flag==='unknown'?'unknown':'';
+  return `<section class="card stability" aria-label="متابعة الانتظام المالي">
+    <div class="stability-head"><h2 style="margin:0">متابعة الانتظام المالي</h2><span class="stability-state ${statusClass}">${status}</span></div>
+    <p class="note">حتى ${dateName(st.asOf)} · بناءً على المدفوعات والمواعيد التي سجلتها فقط، وليس على بيانات سمة أو البنك.</p>
+    <div class="grid">
+      <div class="stat"><span class="muted">متأخرات غير البطاقات المسجلة</span><b class="${st.arrearsOpen>0?'neg':''}">${money(st.arrearsOpen)}</b></div>
+      <div class="stat"><span class="muted">أقساط غير البطاقات تجاوزت موعدها</span><b class="${st.lateRegular>0?'neg':''}">${money(st.lateRegular)}</b></div>
+      <div class="stat"><span class="muted">أقساط غير البطاقات خلال 30 يومًا</span><b>${money(st.upcomingRegular)}</b></div>
+      <div class="stat"><span class="muted">مستحقات البطاقات خلال 30 يومًا</span><b>${money(st.upcomingCard)}</b></div>
+    </div>
+    ${st.arrearsPct===null?'<p class="hint">لا توجد دفعات مصنّفة «متأخرات» في السجلات الحالية.</p>':`<div class="progress"><b>تسوية المتأخرات المسجلة</b><b>${st.arrearsPct}%</b></div><div class="smallbar"><div style="width:${st.arrearsPct}%"></div></div><div class="hint">سُدد ${money(st.arrearsSettled)} من أصل ${money(st.arrearsTotal)} مصنفة متأخرات. هذه نسبة تسوية فقط وليست نسبة استقرار مالي.</div>`}
+    <h4>البطاقات منفصلة عن متابعة أقساط التمويلات</h4>
+    <div class="line"><span>الرصيد المتبقي للبطاقات المسجلة</span><b>${money(st.cardBalance)}</b></div>
+    ${st.cardPast>0?`<p class="note neg">يوجد ${money(st.cardPast)} من دفعات بطاقات تجاوز تاريخها المُدخل، ويتطلب مراجعة كشف البنك.</p>`:''}
+    <h4>الأشهر الثلاثة القادمة</h4>
+    ${st.calendar.map(x=>`<div class="due-row"><span>${monthName(x.month)}</span><span><b>${money(x.ordinary)}</b><div class="muted">بطاقات: ${money(x.cards)}</div></span></div>`).join('')}
+    ${st.lateRows.length?`<details class="installments"><summary>مراجعة الأقساط المتجاوزة (${st.lateCount})</summary>${st.lateRows.slice(0,6).map(x=>`<div class="due-row"><span>${esc(x.name)}<div class="muted">${dateName(x.date)}</div></span><b>${money(x.amount)}</b></div>`).join('')}${st.lateRows.length>6?'<p class="note">توجد بنود أخرى. راجع صفحة البنود.</p>':''}</details>`:''}
+    ${st.nextRows.length?`<details class="installments"><summary>أقرب الدفعات (${st.nextRows.length})</summary>${st.nextRows.slice(0,8).map(x=>`<div class="due-row"><span>${esc(x.name)}<div class="muted">${dateName(x.date)}${x.card?' · بطاقة':''}</div></span><b>${money(x.amount)}</b></div>`).join('')}${st.nextRows.length>8?'<p class="note">للمزيد راجع صفحة البنود.</p>':''}</details>`:''}
+    ${st.undated?`<p class="hint">يوجد ${st.undated} من الأقساط غير المسددة بدون تاريخ يومي دقيق؛ لم تُصنّف كمتأخرة تلقائيًا.</p>`:''}
+    <div class="followup"><b>${st.flag==='attention'?'الخطوة التالية: تأكد من تسوية المبالغ المشار إليها وتسجيل السداد في التطبيق.':'الخطوة التالية: حافظ على سداد الأقساط في مواعيدها وسجّلها بعد الدفع.'}</b>
+      <p class="hint">إذا سددت متأخرات ولم تُسجّل مدفوعاتها، ستبقى ظاهرة هنا. ولا تعني هذه المؤشرات أن التمويلات منتظمة لدى الجهات رسميًا أو أن إجراءات التنفيذ مستبعدة. ويمكن أن تختلف مستحقات البطاقات الفعلية عن التقديرات.</p>
+      <div class="actions">${button('عرض البنود وتسجيل السداد',"go('items')",'')}</div>
+    </div>
+  </section>`;
+}
+
 function dashboard(){
   const months=period==='month'?1:period==='quarter'?3:period==='half'?6:12;
   const list=Array.from({length:months},(_,i)=>addMonths(anchor,i));
@@ -319,6 +416,7 @@ function dashboard(){
     <label>بداية الفترة</label>
     <input type="month" value="${anchor}" onchange="anchor=this.value;render()">
   </div>
+  ${regularityPanel()}
   <div class="card">
     <div class="muted">المتبقي الحالي من مبالغ خطط الفترة</div>
     <div class="big ${balance<0?'neg':''}">${money(balance)}</div>
