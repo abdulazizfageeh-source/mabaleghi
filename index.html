@@ -342,6 +342,26 @@ function scheduledEntriesForPlan(planId){
   }
   return result.sort((a,b)=>instSortDate(a.inst).localeCompare(instSortDate(b.inst)));
 }
+/* كل ما يخص الخطة: الربط المسبق والسداد الذي خرج منها فعلاً، حتى دون ربط الدفعة. */
+function planPayments(planId){
+  return db.payments.filter(p=>p.planId===planId).slice().sort((a,b)=>b.date.localeCompare(a.date));
+}
+function planRelatedItems(planId){
+  const paidItemIds=new Set(planPayments(planId).map(x=>x.itemId));
+  return db.items.filter(item=>paidItemIds.has(item.id)||itemSchedule(item).some(d=>linkedPlanId(item,d)===planId));
+}
+function planRelatedInstallments(item,planId){
+  const paidInstIds=new Set(planPayments(planId).filter(p=>p.itemId===item.id&&p.installmentId).map(p=>p.installmentId));
+  return itemSchedule(item).filter(inst=>linkedPlanId(item,inst)===planId||paidInstIds.has(inst.id))
+    .sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
+}
+function planPaymentRow(payment){
+  const item=db.items.find(i=>i.id===payment.itemId);
+  const inst=item&&itemSchedule(item).find(d=>d.id===payment.installmentId);
+  return `<div class="line"><div><b>${esc(item?.name||'بند غير موجود')}</b>
+    <div class="muted">${dateName(payment.date)} · ${inst?instLabel(inst):'سداد عام للبند'}</div></div>
+    <b>${money(payment.amount)}</b></div>`;
+}
 function button(label,fn,cl='secondary'){const noValidate=(label==='إلغاء'||label==='إغلاق')?' formnovalidate':'';return `<button type="button"${noValidate} class="${cl}" onclick="${fn}">${label}</button>`}
 const expandedInstallments=new Set();
 const openedGoalGroups=new Set();
@@ -629,6 +649,8 @@ function plans(){
   ${sorted.map(p=>{
     const committed=commitmentsForPlan(p.id),current=planBalance(p);
     const linked=scheduledEntriesForPlan(p.id);
+    const paid=planPayments(p.id);
+    const related=planRelatedItems(p.id);
     return `<div class="card">
       <div class="line"><div><b>${esc(planLabel(p))}</b><div class="muted">تاريخ توفر المبلغ: ${dateName(planDate(p))}</div></div>
         <span class="tag">${money(current)}</span></div>
@@ -640,9 +662,12 @@ function plans(){
       </div>
       ${p.note?`<p class="note">${esc(p.note)}</p>`:''}
       ${p.carryFromPlanId?`<p class="note">يتضمن ${money(p.carry)} مرحّلة من ${esc(fundingLabel(p.carryFromPlanId))}.</p>`:''}
-      ${linked.length?`<details class="installments"><summary>الدفعات المرتبطة (${linked.length})</summary>
+      ${related.length?`<div class="note">${related.length} بند يخص هذه الخطة · ${paid.length} عملية سداد مسجلة · ${linked.length} دفعة مربوطة</div>`:''}
+      ${paid.length?`<details class="installments"><summary>ما سُدد من هذه الخطة (${paid.length})</summary>
+        ${paid.map(planPaymentRow).join('')}</details>`:''}
+      ${linked.length?`<details class="installments"><summary>الدفعات المربوطة بالخطة (${linked.length})</summary>
         ${linked.map(x=>`<div class="line"><div><b>${esc(x.item.name)}</b><div class="muted">${instLabel(x.inst)} · ${installmentKindLabel(x.inst)}</div></div>
-          <div style="text-align:left"><b>${money(x.remaining)}</b>${x.remaining>0?`<div>${button('سداد',`pay('${x.item.id}','${p.id}','${x.inst.id}')`,'small')}</div>`:''}</div></div>`).join('')}</details>`:''}
+          <div style="text-align:left"><b>${x.remaining>0?money(x.remaining):'مسدد'}</b>${x.remaining>0?`<div>${button('سداد',`pay('${x.item.id}','${p.id}','${x.inst.id}')`,'small')}</div>`:''}</div></div>`).join('')}</details>`:''}
       <div class="actions">${button('عرض البنود المرتبطة',`openPlan('${p.id}')`,'')}
         ${button('تعديل',`editPlan('${p.id}')`)}${button('حذف',`deletePlan('${p.id}')`,'danger')}</div>
     </div>`;
@@ -650,23 +675,27 @@ function plans(){
 }
 function items(){
   const p=active?db.plans.find(x=>x.id===active):null;
-  const its=p?db.items.filter(i=>itemSchedule(i).some(d=>linkedPlanId(i,d)===p.id)):[...db.items].reverse();
+  const its=p?planRelatedItems(p.id):[...db.items].reverse();
   return `<div class="card">
     <div class="line"><h2>${p?'بنود مرتبطة بخطة '+esc(planLabel(p)):'جميع البنود'}</h2>
       ${p?button('كل البنود',"go('items')"):''}</div>
-    <p class="note">أنشئ البنود مستقلّة عن الخطط. افتح «عرض الدفعات» لتحديد خطة مستقلة لكل دفعة، أو لتعديل نوعها.</p>
+    <p class="note">${p?'يعرض هذا القسم كل بند له دفعة مربوطة بالخطة أو عملية سداد خرجت منها، حتى لو لم تكن الدفعة مربوطة مسبقًا.':'أنشئ البنود مستقلّة عن الخطط. افتح «عرض الدفعات» لتحديد خطة مستقلة لكل دفعة، أو لتعديل نوعها.'}</p>
     ${p?`<p class="muted">الرصيد النقدي: ${money(planBalance(p))} · المخصص: ${money(commitmentsForPlan(p.id))}</p>`:''}
   </div>
   ${its.map(i=>{
     const bal=scheduleBalances(i);
-    const all=itemSchedule(i).filter(d=>!p||linkedPlanId(i,d)===p.id).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
+    const all=p?planRelatedInstallments(i,p.id):itemSchedule(i).slice().sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
+    const paymentsFromPlan=p?planPayments(p.id).filter(x=>x.itemId===i.id):[];
+    const sumFromPlan=cents(paymentsFromPlan.reduce((sum,x)=>sum+Number(x.amount||0),0));
     return `<div class="card" id="item-${esc(i.id)}">
       <div class="line"><div><b>${esc(i.name)}</b><div class="muted">${isCard(i)?'بطاقة ائتمانية · حد أدنى ثم 5%':'التزام عادي'}</div></div>
         <span class="tag">${remaining(i)===0?'مسدد':paidFor(i)>0?'جزئي':'غير مسدد'}</span></div>
       ${i.note?`<p class="note">${esc(i.note)}</p>`:''}
+      ${p?`<p class="note">مسدد من هذه الخطة: <b>${money(sumFromPlan)}</b> · دفعات مربوطة: ${itemSchedule(i).filter(d=>linkedPlanId(i,d)===p.id).length}</p>`:''}
       <div class="grid"><div class="stat"><span class="muted">قيمة البند</span><b>${money(i.amount)}</b></div>
         <div class="stat"><span class="muted">المتبقي</span><b>${money(remaining(i))}</b></div></div>
-      <details class="installments" ${expandedInstallments.has(i.id)?'open':''} ontoggle="toggleInstallments('${i.id}',this)"><summary>عرض الدفعات (${all.length})</summary>
+      ${p&&paymentsFromPlan.length?`<details class="installments"><summary>سجلات السداد من هذه الخطة (${paymentsFromPlan.length})</summary>${paymentsFromPlan.map(planPaymentRow).join('')}</details>`:''}
+      <details class="installments" ${expandedInstallments.has(i.id)?'open':''} ontoggle="toggleInstallments('${i.id}',this)"><summary>${p?'دفعات مربوطة أو مسددة من الخطة':'عرض الدفعات'} (${all.length})</summary>
         ${expandedInstallments.has(i.id)?all.map(d=>{
           const pl=linkedPlanId(i,d),left=bal[d.id]?.remaining??d.amount;
           return `<div class="installment-row"><div class="line"><div><b>${instLabel(d)}</b>
@@ -678,7 +707,7 @@ function items(){
               </select></div>
               <div><label>ربط الدفعة بخطة</label><select onchange="linkInstallment('${i.id}','${d.id}',this.value)">
                 ${fundingSelectOptions(pl)}</select></div></div>
-            <p class="note">${pl?'مرتبطة: '+esc(fundingLabel(pl)):'غير مرتبطة بخطة'}${left>0?' · لا يُخصم إلا عند السداد':''}</p>
+            <p class="note">${pl?'مرتبطة: '+esc(fundingLabel(pl)):'غير مرتبطة بخطة'}${p&&pl!==p.id?' · ظهرت هنا لأن سدادًا خرج من هذه الخطة':''}${left>0?' · لا يُخصم إلا عند السداد':''}</p>
             ${left>0?`<div class="actions">${button('تسجيل سداد الدفعة',`pay('${i.id}','${pl}','${d.id}')`,'small')}</div>`:''}
           </div>`;
         }).join('')||'<p class="note">لا توجد دفعات. اضغط تعديل لإضافتها.</p>':''}
@@ -907,84 +936,112 @@ function submitItem(iid){
   if(node&&!old)requestAnimationFrame(()=>node.scrollIntoView({behavior:'instant',block:'center'}));
 }
 function pay(iid,preferredPlanId='',preferredInstId=''){
-  const i=db.items.find(x=>x.id===iid);
-  if(!i)return alert('البند غير موجود');
-  const left=remaining(i);
-  if(!left)return alert('البند مسدد بالكامل');
-  const bal=scheduleBalances(i);
-  const computedSchedule=itemSchedule(i);
-  const unpaid=computedSchedule.filter(d=>(bal[d.id]?.remaining??Number(d.amount||0))>0).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
-  const preferredInst=preferredInstId&&unpaid.find(d=>d.id===preferredInstId);
-  const first=preferredInst||unpaid[0];
-  const paymentDate=localToday();
-  const funding=fundingPlansFor(paymentDate);
-  if(!funding.length)return alert('لا توجد خطة متاحة بتاريخ اليوم وبها رصيد للسداد');
-  const linked=first?linkedPlanId(i,first):'';
-  const preferred=funding.find(p=>p.id===(preferredPlanId||linked))||funding.find(p=>p.id===linked)||funding.find(p=>p.id===i.planId)||funding[0];
-  const instLeft=first?(bal[first.id]?.remaining??Number(first.amount||0)):left;
-  const defaultAmount=Math.min(left,planBalance(preferred),instLeft);
-  const options=unpaid.map(d=>`<option value="${d.id}" ${first?.id===d.id?'selected':''}>${instLabel(d)} — متبقي ${money(bal[d.id]?.remaining??d.amount)}</option>`).join('');
-  show(`<h2>سداد: ${esc(i.name)}</h2>
+  const item=db.items.find(x=>x.id===iid);
+  if(!item)return alert('البند غير موجود');
+  const left=remaining(item);
+  if(left<=0.005)return alert('البند مسدد بالكامل');
+  const balances=scheduleBalances(item);
+  const scheduled=itemSchedule(item);
+  const unpaid=scheduled.filter(d=>(balances[d.id]?.remaining??Number(d.amount||0))>0.005)
+    .sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
+  const first=(preferredInstId&&unpaid.find(d=>d.id===preferredInstId))||unpaid[0];
+  const date=localToday();
+  const funding=fundingPlansFor(date);
+  if(!db.plans.some(p=>planBalance(p)>0.005))return alert('لا توجد خطة بها رصيد للسداد');
+  /* لا نعتمد الخطة المرتبطة بالقسط كمصدر للسداد؛ الربط غير الخصم الفعلي.
+     لا نحدد مصدرًا تلقائيًا إلا عند دخول المستخدم من داخل خطة معينة. */
+  const preferred=funding.find(p=>p.id===preferredPlanId);
+  const instalmentLeft=first?(balances[first.id]?.remaining??Number(first.amount||0)):left;
+  const amount=cents(Math.min(left,instalmentLeft,preferred?planBalance(preferred):Infinity));
+  const options=unpaid.map(d=>`<option value="${d.id}" ${first?.id===d.id?'selected':''}>${instLabel(d)} — متبقي ${money(balances[d.id]?.remaining??d.amount)}</option>`).join('');
+  show(`<h2>تسجيل سداد: ${esc(item.name)}</h2>
     <p>المتبقي على البند: <b>${money(left)}</b></p>
     <form id="f" data-item-id="${iid}" onsubmit="event.preventDefault();submitPay('${iid}')">
       <label>تاريخ السداد</label>
-      <input name="date" type="date" required value="${paymentDate}" onchange="refreshFundingPlans('${preferred.id}')">
-      <label>السداد من أي خطة؟</label>
-      <select name="fundingPlanId" id="fundingPlan" required>
-        ${funding.map(p=>`<option value="${p.id}" ${p.id===preferred.id?'selected':''}>${esc(planLabel(p))} — متاح ${money(planBalance(p))}</option>`).join('')}
+      <input name="date" type="date" required value="${date}" onchange="refreshFundingPlans()">
+      <label>الخطة التي سيُخصم منها السداد</label>
+      <select name="fundingPlanId" id="fundingPlan" required onchange="refreshPaymentSourcePreview()">
+        ${paymentPlanOptions(date,preferred?.id||'')}
       </select>
+      <div class="note" id="paymentSourcePreview" role="status" aria-live="polite"></div>
       <label>المبلغ المدفوع</label>
-      <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${defaultAmount}">
-      ${computedSchedule.length?`<label>الدفعة المرتبطة</label>
-      <select name="installmentId" onchange="refreshPaymentPlanChoice()">
-        ${options}
-        <option value="">سداد عام للبند — يُوزع على أقدم دفعة غير مسددة</option>
-      </select>`:'<input type="hidden" name="installmentId" value="">'}
-      <p class="note">يمكن سداد بند قديم من خطة أحدث طالما أن مبلغ الخطة متوفر في تاريخ السداد.</p>
-      <div class="actions"><button type="submit">تأكيد السداد</button>${button('إلغاء','dismissModal(event)')}</div>
+      <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${amount}" oninput="refreshPaymentSourcePreview()">
+      ${scheduled.length?`<label>الدفعة المرتبطة</label>
+        <select name="installmentId" onchange="refreshPaymentPlanChoice()">
+          ${options}<option value="">سداد عام للبند — يُوزع على أقدم دفعة غير مسددة</option>
+        </select>`:'<input type="hidden" name="installmentId" value="">'}
+      <p class="note">تغيير الدفعة لا يغيّر خطة الدفع التي تختارها. والخطط التي لم يحِن تاريخ توفرها تظهر غير متاحة إلى أن تغيّر تاريخ السداد. لا تسجّل سدادًا قبل حدوثه فعليًا.</p>
+      <div class="actions"><button type="submit">مراجعة وتأكيد السداد</button>${button('إلغاء','dismissModal(event)')}</div>
     </form>`);
+  refreshPaymentSourcePreview();
 }
-function refreshPaymentPlanChoice(){
-  const f=document.getElementById('f');if(!f)return;
-  const select=f.querySelector('[name="installmentId"]'),plan=f.querySelector('[name="fundingPlanId"]');
-  if(!select||!plan||!select.value)return;
-  const iid=f.dataset.itemId;
-  const item=db.items.find(i=>i.id===iid);
-  const inst=item&&itemSchedule(item).find(d=>d.id===select.value);
-  const pid=inst?linkedPlanId(item,inst):'';
-  if(pid&&[...plan.options].some(o=>o.value===pid))plan.value=pid;
+/* إظهار جميع الخطط، مع تعطيل التي لم يتوفر مبلغها في تاريخ السداد.
+   هذا يمنع اختفاء «راتب أكتوبر» بصمت ثم اختيار «أمي ١» بالخطأ. */
+function paymentPlanOptions(date,selectedId=''){
+  const valid=fundingPlansFor(date);
+  const activeIds=new Set(valid.map(p=>p.id));
+  const upcoming=[...db.plans].filter(p=>!activeIds.has(p.id)&&planBalance(p)>0.005)
+    .sort((a,b)=>planDate(a).localeCompare(planDate(b)));
+  return `<option value="" disabled ${!selectedId?'selected':''}>اختر خطة الدفع بنفسك</option>`+
+    valid.map(p=>`<option value="${p.id}" ${selectedId===p.id?'selected':''}>${esc(planLabel(p))} — رصيد ${money(planBalance(p))}</option>`).join('')+
+    upcoming.map(p=>`<option value="${p.id}" disabled>${esc(planLabel(p))} — غير متاحة قبل ${dateName(planDate(p))}</option>`).join('');
 }
-function refreshFundingPlans(preferredId=''){
+/* اختيار دفعة أخرى يجب ألا يغيّر مصدر السداد المحدد يدويًا. */
+function refreshPaymentPlanChoice(){refreshPaymentSourcePreview()}
+function refreshPaymentSourcePreview(){
+  const f=document.getElementById('f'), note=document.getElementById('paymentSourcePreview');
+  if(!f||!note)return;
+  const pid=f.querySelector('[name="fundingPlanId"]')?.value;
+  const plan=db.plans.find(p=>p.id===pid);
+  if(!plan){note.textContent='اختر الخطة التي ستدفع منها، ولن يُخصم شيء حتى تؤكد السداد.';return}
+  const amount=Number(f.querySelector('[name="amount"]')?.value)||0;
+  const instId=f.querySelector('[name="installmentId"]')?.value;
+  const item=db.items.find(i=>i.id===f.dataset.itemId);
+  const inst=item&&itemSchedule(item).find(d=>d.id===instId);
+  const linked=inst&&linkedPlanId(item,inst);
+  const diff=linked&&linked!==pid;
+  note.textContent=`سيُخصم ${money(amount)} من «${planLabel(plan)}». الرصيد الحالي ${money(planBalance(plan))}، وبعد السداد ${money(planBalance(plan)-amount)}.`+
+    (diff?` القسط مربوط حاليًا بخطة «${fundingLabel(linked)}»، لكن السداد سيخرج من الخطة التي اخترتها فقط.`:'');
+}
+function refreshFundingPlans(){
   const f=document.getElementById('f'), sel=document.getElementById('fundingPlan');
   if(!f||!sel)return;
   const date=f.querySelector('[name="date"]').value;
-  const current=sel.value||preferredId;
-  const funding=fundingPlansFor(date);
-  sel.innerHTML=funding.map(p=>`<option value="${p.id}" ${p.id===current?'selected':''}>${esc(planLabel(p))} — متاح ${money(planBalance(p))}</option>`).join('');
-  if(!funding.length)sel.innerHTML='<option value="">لا توجد خطة متاحة بهذا التاريخ</option>';
+  const prev=sel.value;
+  const options=fundingPlansFor(date);
+  const stillValid=options.some(p=>p.id===prev);
+  sel.innerHTML=paymentPlanOptions(date,stillValid?prev:'');
+  refreshPaymentSourcePreview();
 }
 function submitPay(iid){
-  const v=Object.fromEntries(new FormData(document.getElementById('f'))), i=db.items.find(x=>x.id===iid);
-  const p=db.plans.find(x=>x.id===v.fundingPlanId), amount=Number(v.amount||0);
-  if(!i)return alert('البند غير موجود');
-  if(amount<=0)return alert('أدخل مبلغًا صحيحًا');
-  if(amount>remaining(i)+0.001)return alert('المبلغ يتجاوز المتبقي على البند');
-  if(!p)return alert('اختر خطة للسداد منها');
-  if(planDate(p)>v.date)return alert('تاريخ توفر مبلغ الخطة يأتي بعد تاريخ السداد');
-  if(amount>planBalance(p)+0.001)return alert('المبلغ يتجاوز الرصيد المتبقي في الخطة المختارة');
+  const f=document.getElementById('f');
+  if(!f)return;
+  const v=Object.fromEntries(new FormData(f)), item=db.items.find(x=>x.id===iid);
+  const plan=db.plans.find(x=>x.id===v.fundingPlanId), amount=Number(v.amount||0);
+  if(!item)return alert('البند غير موجود');
+  if(!Number.isFinite(amount)||amount<=0)return alert('أدخل مبلغًا صحيحًا');
+  if(amount>remaining(item)+0.001)return alert('المبلغ يتجاوز المتبقي على البند');
+  if(!plan)return alert('اختر خطة السداد منها بنفسك');
+  if(!v.date||planDate(plan)>v.date)return alert('تاريخ توفر مبلغ الخطة يأتي بعد تاريخ السداد');
+  if(amount>planBalance(plan)+0.001)return alert('المبلغ يتجاوز الرصيد المتبقي في الخطة المختارة');
   if(v.installmentId){
-    const left=installmentRemaining(i,v.installmentId);
-    if(amount>left+0.001)return alert('المبلغ أكبر من المتبقي على الدفعة المحددة');
+    const inst=itemSchedule(item).find(d=>d.id===v.installmentId);
+    if(!inst)return alert('الدفعة غير موجودة، أعد فتح السداد');
+    if(amount>installmentRemaining(item,v.installmentId)+0.001)return alert('المبلغ أكبر من المتبقي على الدفعة المحددة');
   }
-  const payment={id:id(),itemId:iid,planId:p.id,amount:cents(amount),date:v.date,installmentId:v.installmentId||''};
+  const payment={id:id(),itemId:iid,planId:plan.id,amount:cents(amount),date:v.date,installmentId:v.installmentId||''};
   db.payments.push(payment);
-  const bad=fundingOverdrawn();
-  if(bad){
-    db.payments=db.payments.filter(x=>x.id!==payment.id);
-    alert('هذا السداد سيستهلك مبلغًا مخصصًا لدفعات أخرى في خطة «'+planLabel(bad)+'». عدّل ربط الدفعات أولًا.');return;
-  }
+  const overdrawn=fundingOverdrawn();
+  db.payments.pop();
+  if(overdrawn)return alert('هذا السداد سيستهلك مبلغًا مخصصًا لدفعات أخرى في خطة «'+planLabel(overdrawn)+'». عدّل ربط الدفعات أولًا.');
+  /* التأكيد قبل أي عملية حفظ يذكر مصدر السداد صراحة. */
+  if(!confirm(`تأكيد السداد؟\nالبند: ${item.name}\nالمبلغ: ${money(amount)}\nالخصم من خطة: ${planLabel(plan)}\nالمتبقي في هذه الخطة بعد السداد: ${money(planBalance(plan)-amount)}`))return;
+  /* حماية إضافية إذا تغيّرت البيانات أثناء فتح النافذة. */
+  if(amount>planBalance(plan)+0.001||amount>remaining(item)+0.001)return alert('تغيّر الرصيد، أعد فتح السداد');
+  db.payments.push(payment);
   dismissModal();save();
 }
+
 function history(iid){
   const i=db.items.find(x=>x.id===iid), ps=db.payments.filter(p=>p.itemId===iid).sort((a,b)=>b.date.localeCompare(a.date));
   show(`<h2>سجل السداد</h2>
