@@ -93,6 +93,41 @@ h3{font-size:16px}
 .stability .hint{font-size:12px;color:#677b89;line-height:1.7}
 .stability .due-row{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid #edf1f4}
 .stability .due-row:last-child{border-bottom:0}
+
+/* قائمة اختيار الخطط: الاسم واضح، والرصيد أسفله بلا وصف */
+.plan-select-native{position:absolute!important;width:1px!important;height:1px!important;opacity:0!important;pointer-events:none!important;overflow:hidden;clip-path:inset(50%);padding:0!important;border:0!important}
+.plan-picker{position:relative;width:100%;margin-top:5px}
+.plan-picker-trigger{display:flex;gap:12px;align-items:center;justify-content:space-between;width:100%;min-height:63px;padding:11px 14px;background:#fff;color:#172b4d;border:1px solid #d8e2e9;border-radius:13px;text-align:right;box-shadow:0 1px 3px #102a4305}
+.plan-picker-trigger:focus-visible{outline:2px solid #146c87;outline-offset:2px}
+.plan-picker-title,.plan-option-title{display:block;font-weight:750;font-size:16.5px;line-height:1.45;overflow-wrap:anywhere}
+.plan-picker-balance,.plan-option-balance{display:block;color:#96a5b3;font-size:12px;font-weight:400;line-height:1.6;margin-top:2px;direction:ltr;text-align:right;font-variant-numeric:tabular-nums}
+.plan-picker-chevron{font-size:19px;color:#8b9ba9;flex-shrink:0}
+#planPickerDialog{inset:auto 0 0;transform:none;margin:0 auto;width:min(100%,520px);max-height:75dvh;padding:16px 16px max(18px,env(safe-area-inset-bottom));border-radius:22px 22px 0 0;overscroll-behavior:contain}
+#planPickerDialog .plan-choice{width:100%;border:0;border-bottom:1px solid #eff2f5;background:#fff;color:#172b4d;border-radius:0;display:block;text-align:right;padding:13px 10px;min-height:65px}
+#planPickerDialog .plan-choice[aria-selected="true"]{background:#f1f8fa;border-radius:12px}
+#planPickerDialog .plan-choice:disabled{opacity:.42}
+#planPickerDialog .plan-option-title{font-size:17px}
+#planPickerDialog h2{padding-left:43px}
+#planPickerDialog .plan-option-list{overflow-y:auto;max-height:57dvh;overscroll-behavior:contain}
+#planPickerDialog .plan-chooser-close{float:left;background:#e9f1f5;color:#194a61;padding:8px 13px}
+/* مؤشر الاستقرار والأهداف التلقائية */
+.health-card{border:1px solid #d4e4df}
+.health-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.health-main{display:flex;align-items:center;gap:13px;flex-wrap:wrap}
+.health-meter{width:152px;max-width:42vw;height:auto;flex:none}
+.health-summary{flex:1;min-width:130px}
+.health-summary .big{font-size:25px;margin:2px 0}
+.health-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:12px}
+.health-metric{border-radius:12px;background:#f4f7f8;padding:10px;min-width:0}
+.health-metric .metric-number{font-size:20px;font-weight:750;margin:3px 0;font-variant-numeric:tabular-nums}
+.health-metric small{display:block;font-size:12px;color:#6d8292}
+.health-tag{background:#edf5f1;color:#24745a;padding:4px 9px;font-size:11px;border-radius:16px}
+.health-target{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:11px}
+.auto-goal-progress{font-size:18px;font-weight:750;white-space:nowrap;color:#146c87}
+.goal-entry-head>div{min-width:0}
+.health-metric .mini-bar{height:5px;border-radius:8px;background:#e2eaf0;overflow:hidden;margin-top:7px}
+.health-metric .mini-bar>div{height:100%;background:#259278}
+@media(max-width:360px){.health-meter{width:132px}.health-metric .metric-number{font-size:17px}}
 </style>
 </head>
 <body>
@@ -105,20 +140,25 @@ h3{font-size:16px}
 <button id="tab-goals" onclick="go('goals')">الأهداف</button>
 </nav>
 <dialog id="modal"></dialog>
+<dialog id="planPickerDialog" aria-label="اختيار خطة"></dialog>
 <input id="importDataFile" type="file" accept=".json,application/json" style="display:none" onchange="readImportFile(this)">
 <script>
 const KEY='mabaleghi-v1';
 const GOALS_KEY='mabaleghi-goals-v1';
+const STABILITY_KEY='mabaleghi-stability-v1';
+const GOAL_METRICS=['stability','arrears','regularity','cards','liquidity','month','payoff'];
+const GOAL_METRIC_LABELS={stability:'الاستقرار المالي',arrears:'تسوية المتأخرات',regularity:'الانتظام 3 أشهر',cards:'انتظام البطاقات',liquidity:'تحقيق حد السيولة',month:'شهر بدون تأخير',payoff:'سداد بند محدد'};
 const goalPresets=[
-  {title:'الوصول إلى الاستقرار المالي',type:'strategic',horizon:'long'},
-  {title:'تسوية المتأخرات',type:'operational',horizon:'short'},
-  {title:'شهر كامل دون تأخير',type:'operational',horizon:'short'},
-  {title:'معالجة مستحقات البطاقات',type:'operational',horizon:'short'},
-  {title:'ثلاثة أشهر من انتظام الأقساط',type:'operational',horizon:'medium'},
-  {title:'توفير مبلغ للطوارئ',type:'operational',horizon:'medium'},
-  {title:'خفض الأقساط الشهرية',type:'operational',horizon:'medium'},
-  {title:'تقليل الاعتماد على الاقتراض',type:'strategic',horizon:'long'}
+  {title:'الوصول إلى الاستقرار المالي',type:'strategic',horizon:'long',metric:'stability'},
+  {title:'تسوية المتأخرات',type:'operational',horizon:'short',metric:'arrears'},
+  {title:'شهر كامل دون تأخير',type:'operational',horizon:'short',metric:'month'},
+  {title:'معالجة مستحقات البطاقات',type:'operational',horizon:'short',metric:'cards'},
+  {title:'ثلاثة أشهر من انتظام الأقساط',type:'operational',horizon:'medium',metric:'regularity'},
+  {title:'تحقيق حد السيولة',type:'operational',horizon:'short',metric:'liquidity'},
+  {title:'إغلاق تمويل محدد',type:'operational',horizon:'medium',metric:'payoff'}
 ];
+const LEGACY_GOAL_METRIC={'توفير مبلغ للطوارئ':'liquidity'};
+function inferGoalMetric(g){return GOAL_METRICS.includes(g.metric)?g.metric:(goalPresets.find(x=>x.title===g.title)?.metric||LEGACY_GOAL_METRIC[g.title]||'')}
 function validGoals(data){
   if(!Array.isArray(data)||data.length>500)throw new Error('قائمة الأهداف غير صالحة');
   const seen=new Set();
@@ -127,13 +167,31 @@ function validGoals(data){
     seen.add(g.id);
     if(typeof g.title!=='string'||!g.title.trim()||g.title.length>150)throw new Error('عنوان الهدف غير صالح');
     if(!['operational','strategic'].includes(g.type)||!['short','medium','long'].includes(g.horizon))throw new Error('تصنيف الهدف غير صالح');
-    const progress=Number(g.progress);
-    if(!Number.isInteger(progress)||progress<0||progress>100)throw new Error('نسبة إنجاز الهدف غير صالحة');
+    const previous=Number(g.progress??0);
+    if(!Number.isInteger(previous)||previous<0||previous>100)throw new Error('نسبة قديمة غير صالحة');
     const deadline=g.deadline||'';
     if(deadline && !/^\d{4}-\d{2}-\d{2}$/.test(deadline))throw new Error('تاريخ الهدف غير صالح');
-    return {id:g.id,title:g.title.trim(),type:g.type,horizon:g.horizon,progress,deadline,parentId:typeof g.parentId==='string'?g.parentId:''};
+    if(g.metric && !GOAL_METRICS.includes(g.metric))throw new Error('مؤشر الهدف غير معروف');
+    return {id:g.id,title:g.title.trim(),type:g.type,horizon:g.horizon,progress:previous,deadline,
+      parentId:typeof g.parentId==='string'?g.parentId:'',metric:inferGoalMetric(g),itemId:typeof g.itemId==='string'?g.itemId:''};
   });
 }
+function validateStabilitySettings(v){
+  const target=Number(v.target||0),peak=Number(v.peak||0);
+  if(!Number.isFinite(target)||target<0||target>10000000||!Number.isFinite(peak)||peak<0||peak>100)throw new Error('إعدادات السيولة غير صالحة');
+  return {target:cents(target),peak:Math.round(peak)};
+}
+function loadStabilitySettings(){
+  try{
+    const v=JSON.parse(localStorage.getItem(STABILITY_KEY))||{};
+    const target=Number(v.target||0),peak=Number(v.peak||0);
+    return {target:Number.isFinite(target)&&target>0&&target<=10000000?Math.round(target*100)/100:0,
+      peak:Number.isFinite(peak)&&peak>=0&&peak<=100?peak:0};
+  }catch{return {target:0,peak:0}}
+}
+let stabilitySettings=loadStabilitySettings();
+function saveStabilitySettings(){localStorage.setItem(STABILITY_KEY,JSON.stringify(stabilitySettings));render()}
+
 function loadGoals(){try{return validGoals(JSON.parse(localStorage.getItem(GOALS_KEY))||[])}catch{return []}}
 let goals=loadGoals();
 function saveGoals(){localStorage.setItem(GOALS_KEY,JSON.stringify(goals));render()}
@@ -166,7 +224,7 @@ function load(){
 let db=load(),tab='dashboard',period='month',anchor=localToday().slice(0,7),active=null;
 function save(){localStorage.setItem(KEY,JSON.stringify(db));render()}
 function id(){return (typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():'mab-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)}
-function money(n){return (Number(n)||0).toLocaleString('en-US',{maximumFractionDigits:2})+' ر.س'}
+function money(n){return (Number(n)||0).toLocaleString('en-US',{maximumFractionDigits:2})+' ⃁'}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function ym(s){return String(s||'').slice(0,7)}
 function planDate(p){return p?.date||((p?.month||localToday().slice(0,7))+'-01')}
@@ -276,8 +334,72 @@ function cachedUnallocated(p){
 }
 function fundingSelectOptions(selectedId='',emptyLabel='غير مرتبطة بخطة'){
   return `<option value="" ${!selectedId?'selected':''}>${emptyLabel}</option>`+
-    [...db.plans].sort((a,b)=>planDate(a).localeCompare(planDate(b))).map(p=>`<option value="${p.id}" ${selectedId===p.id?'selected':''}>${esc(planLabel(p))} · ${dateName(planDate(p))} · غير مخصص ${money(cachedUnallocated(p))}</option>`).join('');
+    [...db.plans].sort((a,b)=>planDate(a).localeCompare(planDate(b))).map(p=>`<option value="${p.id}" ${selectedId===p.id?'selected':''}>${esc(planLabel(p))}</option>`).join('');
 }
+
+/* تبقى عناصر select المصدر الرسمي للبيانات؛ نعرض لها اختيارًا بصريًا من سطرين. */
+let pendingPlanSelect=null;
+function pickerDisplay(sel){
+  const selected=sel.options[sel.selectedIndex];
+  const p=db.plans.find(x=>x.id===sel.value);
+  const title=p?planLabel(p):(selected?.textContent||'اختر خطة');
+  const balance=p?`<span class="plan-picker-balance">${money(planBalance(p))}</span>`:'';
+  return `<span><span class="plan-picker-title">${esc(title)}</span>${balance}</span><span class="plan-picker-chevron" aria-hidden="true">⌄</span>`;
+}
+function syncPlanPicker(sel){
+  const picker=sel.closest('.plan-picker');
+  if(!picker)return;
+  const trigger=picker.querySelector('.plan-picker-trigger');
+  if(trigger)trigger.innerHTML=pickerDisplay(sel);
+}
+function decoratePlanSelectors(root=document){
+  root.querySelectorAll('select.plan-select-native').forEach(sel=>{
+    if(sel.closest('.plan-picker')){syncPlanPicker(sel);return;}
+    const wrapper=document.createElement('div');
+    wrapper.className='plan-picker';
+    sel.parentNode.insertBefore(wrapper,sel);
+    wrapper.appendChild(sel);
+    const trigger=document.createElement('button');
+    trigger.type='button';
+    trigger.className='plan-picker-trigger';
+    trigger.setAttribute('aria-haspopup','dialog');
+    trigger.setAttribute('aria-label','اختيار الخطة');
+    trigger.addEventListener('click',()=>openPlanPicker(sel));
+    wrapper.appendChild(trigger);
+    syncPlanPicker(sel);
+  });
+}
+function openPlanPicker(sel){
+  const popup=document.getElementById('planPickerDialog');
+  pendingPlanSelect=sel;
+  const choices=Array.from(sel.options).map(opt=>{
+    const p=db.plans.find(x=>x.id===opt.value);
+    const name=p?planLabel(p):opt.textContent;
+    const amount=p?`<span class="plan-option-balance">${money(planBalance(p))}</span>`:'';
+    const idx=Array.from(sel.options).indexOf(opt);
+    return `<button type="button" role="option" class="plan-choice" aria-selected="${sel.value===opt.value}" ${opt.disabled?'disabled':''} data-index="${idx}" onclick="choosePlanOption(${idx})"><span class="plan-option-title">${esc(name)}</span>${amount}</button>`;
+  }).join('');
+  popup.innerHTML=`<button class="plan-chooser-close" type="button" onclick="closePlanPicker()">إغلاق</button><h2>اختر الخطة</h2><div role="listbox" class="plan-option-list">${choices}</div>`;
+  if(!popup.open)popup.showModal();
+  const chosen=popup.querySelector('[aria-selected="true"]');
+  if(chosen)chosen.scrollIntoView({block:'nearest'});
+}
+function closePlanPicker(){
+  const popup=document.getElementById('planPickerDialog');
+  if(popup.open)popup.close();
+  pendingPlanSelect=null;
+}
+function choosePlanOption(idx){
+  const sel=pendingPlanSelect;
+  if(!sel)return;
+  const option=sel.options[idx];
+  if(!option||option.disabled)return;
+  sel.value=option.value;
+  closePlanPicker();
+  syncPlanPicker(sel);
+  sel.dispatchEvent(new Event('change',{bubbles:true}));
+}
+
 function fundingOverdrawn(){return db.plans.find(p=>commitmentsForPlan(p.id)>planBalance(p)+0.005)}
 function instSortDate(d){return d.date||d.month+'-31'}
 function instLabel(d){return (d.label?esc(d.label)+' — ':'')+(d.date?dateName(d.date):monthName(d.month))}
@@ -384,6 +506,7 @@ function render(){
   });
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b.id==='tab-'+tab));
   container.innerHTML=tab==='dashboard'?dashboard():tab==='plans'?plans():tab==='goals'?goalsPage():items();
+  decoratePlanSelectors(container);
 }
 
 /* المقياس محلي ومن بيانات المستخدم فقط؛ لا يحسب درجة سمة ولا يفترض أن جميع التمويلات أُدخلت. */
@@ -443,7 +566,7 @@ function regularityPanel(){
   const statusClass=st.flag==='clear'?'clear':st.flag==='unknown'?'unknown':'';
   return `<section class="card stability" aria-label="متابعة الانتظام المالي">
     <div class="stability-head"><h2 style="margin:0">متابعة الانتظام المالي</h2><span class="stability-state ${statusClass}">${status}</span></div>
-    <p class="note">حتى ${dateName(st.asOf)} · بناءً على المدفوعات والمواعيد التي سجلتها فقط، وليس على بيانات سمة أو البنك.</p>
+    <p class="note">حتى ${dateName(st.asOf)}</p>
     <div class="grid">
       <div class="stat"><span class="muted">متأخرات غير البطاقات المسجلة</span><b class="${st.arrearsOpen>0?'neg':''}">${money(st.arrearsOpen)}</b></div>
       <div class="stat"><span class="muted">أقساط غير البطاقات تجاوزت موعدها</span><b class="${st.lateRegular>0?'neg':''}">${money(st.lateRegular)}</b></div>
@@ -460,86 +583,210 @@ function regularityPanel(){
     ${st.nextRows.length?`<details class="installments"><summary>أقرب الدفعات (${st.nextRows.length})</summary>${st.nextRows.slice(0,8).map(x=>`<div class="due-row"><span>${esc(x.name)}<div class="muted">${dateName(x.date)}${x.card?' · بطاقة':''}</div></span><b>${money(x.amount)}</b></div>`).join('')}${st.nextRows.length>8?'<p class="note">للمزيد راجع صفحة البنود.</p>':''}</details>`:''}
     ${st.undated?`<p class="hint">يوجد ${st.undated} من الأقساط غير المسددة بدون تاريخ يومي دقيق؛ لم تُصنّف كمتأخرة تلقائيًا.</p>`:''}
     <div class="followup"><b>${st.flag==='attention'?'الخطوة التالية: تأكد من تسوية المبالغ المشار إليها وتسجيل السداد في التطبيق.':'الخطوة التالية: حافظ على سداد الأقساط في مواعيدها وسجّلها بعد الدفع.'}</b>
-      <p class="hint">إذا سددت متأخرات ولم تُسجّل مدفوعاتها، ستبقى ظاهرة هنا. ولا تعني هذه المؤشرات أن التمويلات منتظمة لدى الجهات رسميًا أو أن إجراءات التنفيذ مستبعدة. ويمكن أن تختلف مستحقات البطاقات الفعلية عن التقديرات.</p>
+      <p class="hint">أي سداد لم تسجّله سيظل ظاهرًا ضمن المبالغ المستحقة.</p>
       <div class="actions">${button('عرض البنود وتسجيل السداد',"go('items')",'')}</div>
     </div>
   </section>`;
 }
 
 function goalGroupTitle(key){return ({strategic:'الأهداف الاستراتيجية',short:'قصيرة المدى',medium:'متوسطة المدى',long:'طويلة المدى'})[key]||key}
+/* النسب مستمدة من السجلات؛ لا تُفترض نسبة 100% عند غياب البيانات. */
+function paymentAllocation(item){
+  const rows=itemSchedule(item).filter(d=>d.date&&validDate(d.date))
+    .map(d=>({id:d.id,due:d.date,amount:Number(d.amount||0),paid:0,onTime:0})).sort((a,b)=>a.due.localeCompare(b.due));
+  const byId=new Map(rows.map(d=>[d.id,d]));
+  const paid=[...db.payments].filter(p=>p.itemId===item.id).sort((a,b)=>a.date.localeCompare(b.date));
+  paid.forEach(p=>{
+    let amount=Number(p.amount||0);
+    if(p.installmentId&&byId.has(p.installmentId)){
+      const r=byId.get(p.installmentId);
+      const used=Math.max(0,Math.min(amount,r.amount-r.paid));
+      r.paid+=used;if(p.date<=r.due)r.onTime+=used;
+      return;
+    }
+    // البطاقة: السداد غير المرتبط يُنسب لاستحقاق شهر العملية أولًا.
+    if(isCard(item)&&!p.installmentId){
+      const r=rows.find(x=>ym(x.due)===ym(p.date));
+      if(r){const used=Math.max(0,Math.min(amount,r.amount-r.paid));r.paid+=used;if(p.date<=r.due)r.onTime+=used;amount-=used;}
+    }
+    for(const r of rows){
+      if(amount<0.005)break;
+      const used=Math.max(0,Math.min(amount,r.amount-r.paid));
+      if(used>0){r.paid+=used;if(p.date<=r.due)r.onTime+=used;amount-=used;}
+    }
+  });
+  return rows;
+}
+function financialGoalMetrics(asOf=localToday()){
+  const current=ym(asOf),last3=[addMonths(current,-3),addMonths(current,-2),addMonths(current,-1)];
+  const dates=[];
+  for(const item of db.items){for(const x of paymentAllocation(item))dates.push({...x,card:isCard(item),kind:installmentKind(itemSchedule(item).find(d=>d.id===x.id)||{})});}
+  const ordinary=dates.filter(x=>!x.card&&x.kind==='regular');
+  const cardDue=dates.filter(x=>x.card&&x.due<=asOf&&x.due.slice(0,7)>=addMonths(current,-2));
+  const st=stabilitySummary(asOf);
+  const arrears=st.arrearsPct;
+  const regularMonths=last3.map(m=>{
+    const r=ordinary.filter(x=>ym(x.due)===m);
+    return {month:m,hasData:r.length>0,complete:r.length>0&&r.every(x=>x.onTime+0.005>=x.amount)};
+  });
+  const regularity=regularMonths.some(x=>x.hasData)?Math.round(100*regularMonths.filter(x=>x.complete).length/3):null;
+  const previous=last3[2];const previousRegular=ordinary.filter(x=>ym(x.due)===previous);
+  const month=previousRegular.length?previousRegular.every(x=>x.onTime+0.005>=x.amount)?100:0:null;
+  const cards=cardDue.length?Math.round(100*cardDue.reduce((a,x)=>a+Math.min(x.amount,x.onTime),0)/cardDue.reduce((a,x)=>a+x.amount,0)):null;
+  const plansNow=db.plans.filter(p=>planDate(p)<=asOf);
+  const until=plusCalendarDays(asOf,30);
+  const toPay=dates.filter(x=>x.due<=until).reduce((sum,x)=>sum+Math.max(0,x.amount-x.paid),0);
+  // الدفعات المتأخرة المسجلة دون تاريخ تُحتسب ضمن احتياج السيولة، لا انتظام الأقساط.
+  const undatedOpen=db.items.reduce((sum,item)=>{
+    const b=scheduleBalances(item);
+    return sum+itemSchedule(item).filter(d=>(!d.date||!validDate(d.date))&&d.month<=ym(until)).reduce((a,d)=>a+Math.max(0,b[d.id]?.remaining||0),0);
+  },0);
+  const liquidityCash=plansNow.length?cents(plansNow.reduce((sum,p)=>sum+planBalance(p),0)-toPay-undatedOpen):null;
+  const liquidity=stabilitySettings.target>0&&liquidityCash!==null?
+    Math.round(Math.min(100,Math.max(0,liquidityCash/stabilitySettings.target*100))):null;
+  const metrics={arrears,regularity,cards,liquidity,month,liquidityCash,stability:null,regularMonths};
+  if([arrears,regularity,cards,liquidity].every(v=>v!==null)){
+    metrics.stability=Math.round(arrears*.30+regularity*.30+cards*.20+liquidity*.20);
+    if(metrics.stability>stabilitySettings.peak){
+      stabilitySettings.peak=metrics.stability;
+      try{localStorage.setItem(STABILITY_KEY,JSON.stringify(stabilitySettings))}catch{}
+    }
+  }
+  return metrics;
+}
+function formatPercent(value){return value===null||value===undefined?'—':`${Math.round(value)}%`}
+function progressBar(pct){return `<div class="goal-meter"><div style="width:${Math.max(0,Math.min(100,pct??0))}%"></div></div>`}
+function metricDetails(metric){return {
+  stability:'المتأخرات 30% · الأقساط 30% · البطاقات 20% · السيولة 20%',
+  arrears:'المسدد من إجمالي الدفعات المصنفة متأخرات',
+  regularity:'الأشهر المنتظمة من آخر 3 أشهر مكتملة',
+  cards:'الحدود الدنيا المستحقة خلال آخر 3 أشهر وحتى اليوم',
+  liquidity:'السيولة بعد مستحقات 30 يومًا مقارنة بالحد الذي اخترته',
+  month:'آخر شهر مكتمل: جميع الأقساط في موعدها',
+  payoff:'المسدد من قيمة البند المختار'
+}[metric]||'اختر مؤشرًا لاحتساب هذا الهدف'}
+function stabilityGauge(score){
+  const pct=score===null?0:Math.max(0,Math.min(100,score));
+  return `<svg class="health-meter" viewBox="0 0 200 116" role="img" aria-label="مؤشر الاستقرار ${formatPercent(score)}">
+    <path d="M 18 97 A 82 82 0 0 1 182 97" fill="none" stroke="#e7edf2" stroke-width="16" stroke-linecap="round" pathLength="100"/>
+    <path d="M 18 97 A 82 82 0 0 1 182 97" fill="none" stroke="#167c69" stroke-width="16" stroke-linecap="round" pathLength="100" stroke-dasharray="${pct} 100"/>
+    <text x="100" y="87" font-size="28" fill="#172b4d" text-anchor="middle" font-weight="700" font-family="-apple-system,Arial">${formatPercent(score)}</text>
+    <text x="100" y="108" font-size="12" fill="#657c89" text-anchor="middle" font-family="-apple-system,Arial">الاستقرار</text>
+  </svg>`;
+}
+function metricTiles(metrics){
+  const list=[['arrears','المتأخرات'],['regularity','الأقساط'],['cards','البطاقات'],['liquidity','السيولة']];
+  return `<div class="health-metrics">${list.map(([key,label])=>`<div class="health-metric"><small>${label}</small><div class="metric-number">${formatPercent(metrics[key])}</div><div class="mini-bar"><div style="width:${metrics[key]??0}%"></div></div></div>`).join('')}</div>`;
+}
+function stabilityOverview(full=false){
+  const m=financialGoalMetrics(),pct=m.stability;
+  const missing=['arrears','regularity','cards','liquidity'].filter(k=>m[k]===null);
+  const peak=stabilitySettings.peak;
+  return `<section class="card health-card" aria-label="مؤشر الاستقرار المالي">
+    <div class="health-head"><h2 style="margin:0">الاستقرار المالي</h2><span class="health-tag">تلقائي</span></div>
+    <div class="health-main">${stabilityGauge(pct)}
+      <div class="health-summary"><div class="muted">السيولة بعد المستحقات</div>
+        <div class="big ${m.liquidityCash!==null&&m.liquidityCash<0?'neg':''}">${m.liquidityCash===null?'—':money(m.liquidityCash)}</div>
+        <div class="muted">أفضل نتيجة: ${peak?peak+'%':'—'}</div></div>
+    </div>
+    <div class="health-target"><span class="muted">حد السيولة: ${stabilitySettings.target?money(stabilitySettings.target):'غير محدد'}</span>${button('تحديد الحد','editLiquidityTarget()')}</div>
+    ${full?metricTiles(m):`<details class="installments"><summary>تفاصيل المؤشر</summary>${metricTiles(m)}<p class="note">الأوزان: متأخرات 30%، أقساط 30%، بطاقات 20%، سيولة 20%.</p></details>`}
+    ${missing.length?`<p class="note">لا تُحسب النسبة الكلية قبل توفر: ${missing.map(k=>GOAL_METRIC_LABELS[k]).join('، ')}.</p>`:''}
+  </section>`;
+}
+function editLiquidityTarget(){
+  const value=String(stabilitySettings.target||'');
+  show(`<h2>حد السيولة</h2><form id="liquidityForm" onsubmit="event.preventDefault();saveLiquidityTarget()">
+    <label>المبلغ الذي تريده بعد الالتزامات</label>
+    <select name="preset" onchange="liquidityPresetChanged()">
+      <option value="" ${!value?'selected':''}>اختر مبلغًا</option>
+      ${[2000,3000,5000,8000].map(n=>`<option value="${n}" ${value===String(n)?'selected':''}>${money(n)}</option>`).join('')}
+      <option value="other" ${value&&!['2000','3000','5000','8000'].includes(value)?'selected':''}>مبلغ آخر</option>
+    </select>
+    <div id="liquidityCustom" ${!value||['2000','3000','5000','8000'].includes(value)?'hidden':''}>
+      <label>المبلغ</label><input name="custom" type="number" inputmode="decimal" min="0.01" max="10000000" step="0.01" value="${value&&!['2000','3000','5000','8000'].includes(value)?value:''}">
+    </div>
+    <p class="note">يمكن تعديل الحد في أي وقت، وتتحدث النسبة تلقائيًا.</p>
+    <div class="actions"><button type="submit">حفظ</button>${button('إلغاء','dismissModal(event)')}</div>
+  </form>`);
+}
+function liquidityPresetChanged(){
+  const f=document.getElementById('liquidityForm');if(f)document.getElementById('liquidityCustom').hidden=f.elements.preset.value!=='other';
+}
+function saveLiquidityTarget(){
+  const f=document.getElementById('liquidityForm');if(!f)return;
+  const p=f.elements.preset.value;
+  const value=Number(p==='other'?f.elements.custom.value:p);
+  if(!Number.isFinite(value)||value<=0||value>10000000)return alert('اختر مبلغ سيولة صحيحًا');
+  stabilitySettings.target=cents(value);
+  dismissModal();saveStabilitySettings();
+}
+function goalGroupTitle(key){return ({strategic:'الأهداف الاستراتيجية',short:'قصيرة المدى',medium:'متوسطة المدى',long:'طويلة المدى'})[key]||key}
 function goalsPage(){
-  const completed=goals.filter(g=>g.progress===100).length;
-  const average=goals.length?Math.round(goals.reduce((sum,g)=>sum+g.progress,0)/goals.length):0;
   const groups=[{key:'strategic',goals:goals.filter(g=>g.type==='strategic')},
     {key:'short',goals:goals.filter(g=>g.type==='operational'&&g.horizon==='short')},
     {key:'medium',goals:goals.filter(g=>g.type==='operational'&&g.horizon==='medium')},
     {key:'long',goals:goals.filter(g=>g.type==='operational'&&g.horizon==='long')}];
-  return `<div class="card"><div class="line"><h2>أهدافي المالية</h2>${goals.length?'':button('＋ هدف جديد','editGoal()','')}</div>
-    ${goals.length?`<div class="goal-summary">
-      <svg class="goal-arc" viewBox="0 0 200 116" role="img" aria-label="متوسط تقدم الأهداف ${average} بالمئة">
-        <path d="M 18 97 A 82 82 0 0 1 182 97" fill="none" stroke="#e7edf2" stroke-width="16" stroke-linecap="round" pathLength="100"/>
-        <path d="M 18 97 A 82 82 0 0 1 182 97" fill="none" stroke="#167c69" stroke-width="16" stroke-linecap="round" pathLength="100" stroke-dasharray="${average} 100"/>
-        <text x="100" y="87" font-size="29" fill="#172b4d" text-anchor="middle" font-family="-apple-system,Arial" font-weight="700">${average}%</text>
-        <text x="100" y="107" font-size="12" fill="#637b8d" text-anchor="middle" font-family="-apple-system,Arial">متوسط التقدم</text>
-      </svg><div><b>${completed} من ${goals.length}</b><div class="muted">أهداف مكتملة</div></div>
-    </div>`:'<p class="note">ابدأ بهدف صغير. يمكنك اختيار عنوان جاهز وتحديث إنجازه من القائمة دون كتابة.</p>'}
-    <p class="note">النسبة تعكس التقدم الذي تسجله أنت، وليست تقييمًا من سمة أو حكمًا على استقرارك المالي.</p>
-  </div>
-  ${groups.filter(g=>g.goals.length).map(group=>`<details data-goal-group="${group.key}" class="installments goal-group" ${openedGoalGroups.has(group.key)?'open':''}><summary>${goalGroupTitle(group.key)} (${group.goals.length})</summary>
-    ${group.goals.map(g=>`<div class="goal-entry"><div class="goal-entry-head"><div><b>${esc(g.title)}</b>
-    ${g.deadline?`<div class="muted">الموعد: ${dateName(g.deadline)}</div>`:''}
-    ${g.parentId&&goals.some(x=>x.id===g.parentId)?`<div class="muted">ضمن: ${esc(goals.find(x=>x.id===g.parentId).title)}</div>`:''}</div>
-    <select aria-label="تقدم الهدف ${esc(g.title)}" class="small-select" onchange="setGoalProgress('${g.id}',this.value)">
-      ${[0,25,50,75,100].map(v=>`<option value="${v}" ${g.progress===v?'selected':''}>${v}%</option>`).join('')}</select></div>
-    <div class="goal-meter"><div style="width:${g.progress}%"></div></div>
-    <details><summary>خيارات الهدف</summary><div class="actions">
-      ${button('تعديل',`editGoal('${g.id}')`)} ${button('حذف',`deleteGoal('${g.id}')`,'danger small')}
-    </div></details>
-  </div>`).join('')}
-  </details>`).join('')}
-  <div class="item-list-pad"></div><button type="button" class="quickAdd" onclick="editGoal()">＋ إضافة هدف</button>`;
+  const metrics=financialGoalMetrics();
+  const complete=goals.filter(g=>goalProgress(g,metrics)===100).length;
+  return `${stabilityOverview(true)}<div class="card"><div class="line"><h2>أهدافي المالية</h2><span class="tag">${complete} / ${goals.length}</span></div><p class="note">اختر الأهداف والمؤشرات. الإنجاز يتحدث من دفعاتك وخططك تلقائيًا.</p></div>
+    ${groups.filter(g=>g.goals.length).map(group=>`<details data-goal-group="${group.key}" class="installments goal-group" ${openedGoalGroups.has(group.key)?'open':''}><summary>${goalGroupTitle(group.key)} (${group.goals.length})</summary>
+      ${group.goals.map(g=>{const v=goalProgress(g,metrics);return `<div class="goal-entry"><div class="goal-entry-head"><div><b>${esc(g.title)}</b>
+      <div class="muted">${esc(metricDetails(inferGoalMetric(g)))}</div>
+      ${g.deadline?`<div class="muted">الموعد: ${dateName(g.deadline)}</div>`:''}</div><span class="auto-goal-progress">${formatPercent(v)}</span></div>
+      ${progressBar(v)}<details><summary>خيارات الهدف</summary><div class="actions">${button('تعديل',`editGoal('${g.id}')`)} ${button('حذف',`deleteGoal('${g.id}')`,'danger small')}</div></details></div>`}).join('')}
+    </details>`).join('')}
+    <div class="item-list-pad"></div><button type="button" class="quickAdd" onclick="editGoal()">＋ إضافة هدف</button>`;
 }
 function goalPresetChange(applyDefaults=true){
   const f=document.getElementById('goalForm');if(!f)return;
-  const chosen=f.elements.preset.value;
-  const entry=goalPresets.find(g=>g.title===chosen);
+  const choice=f.elements.preset.value,entry=goalPresets.find(g=>g.title===choice);
   const custom=f.elements.title;
-  custom.hidden=chosen!=='custom';custom.disabled=chosen!=='custom';
-  if(entry&&applyDefaults){f.elements.type.value=entry.type;f.elements.horizon.value=entry.horizon;}
-  refreshGoalParent();
+  custom.hidden=choice!=='custom';custom.disabled=choice!=='custom';
+  if(entry&&applyDefaults){f.elements.type.value=entry.type;f.elements.horizon.value=entry.horizon;f.elements.metric.value=entry.metric;}
+  refreshGoalParent();refreshGoalMetric();
 }
 function refreshGoalParent(){
   const f=document.getElementById('goalForm');if(!f)return;
   const field=document.getElementById('goalParentWrap');
   if(field)field.hidden=f.elements.type.value==='strategic';
 }
+function refreshGoalMetric(){
+  const f=document.getElementById('goalForm'),wrap=document.getElementById('goalItemWrap');
+  if(f&&wrap)wrap.hidden=f.elements.metric.value!=='payoff';
+}
 function editGoal(goalId=''){
   const g=goals.find(x=>x.id===goalId);
-  const preset=goalPresets.some(p=>p.title===g?.title)?g.title:'custom';
-  const initial=goalId?preset:'';
+  const preset=goalPresets.some(x=>x.title===g?.title)?g.title:'custom';
+  const initial=g?preset:'';
   const parents=goals.filter(x=>x.type==='strategic'&&x.id!==goalId);
+  const metric=g?inferGoalMetric(g):'';
   show(`<h2>${g?'تعديل هدف':'هدف جديد'}</h2><form id="goalForm" onsubmit="event.preventDefault();submitGoal('${goalId}')">
     <label>اختر الهدف</label><select name="preset" onchange="goalPresetChange()" required>
       <option value="" ${!initial?'selected':''} disabled>اختر من القائمة</option>
       ${goalPresets.map(x=>`<option value="${esc(x.title)}" ${initial===x.title?'selected':''}>${esc(x.title)}</option>`).join('')}
       <option value="custom" ${initial==='custom'?'selected':''}>هدف مخصص</option>
     </select>
-    <input name="title" maxlength="150" placeholder="عنوان الهدف" ${initial==='custom'?'':'hidden disabled'} value="${esc(g?.title||'')}" style="margin-top:9px">
+    <input name="title" maxlength="150" placeholder="اسم الهدف" ${initial==='custom'?'':'hidden disabled'} value="${esc(g?.title||'')}" style="margin-top:9px">
+    <label>مؤشر قياس الإنجاز</label>
+    <select name="metric" onchange="refreshGoalMetric()" required>
+      <option value="" ${!metric?'selected':''} disabled>اختر المؤشر</option>
+      ${GOAL_METRICS.map(key=>`<option value="${key}" ${metric===key?'selected':''}>${GOAL_METRIC_LABELS[key]}</option>`).join('')}
+    </select>
+    <div id="goalItemWrap" ${metric==='payoff'?'':'hidden'}><label>البند المطلوب سداده</label><select name="itemId">
+      <option value="">اختر البند</option>${db.items.map(i=>`<option value="${i.id}" ${g?.itemId===i.id?'selected':''}>${esc(i.name)}</option>`).join('')}
+    </select></div>
     <div class="two"><div><label>نوع الهدف</label><select name="type" onchange="refreshGoalParent()">
-      <option value="operational" ${g?.type!=='strategic'?'selected':''}>تشغيلي</option>
-      <option value="strategic" ${g?.type==='strategic'?'selected':''}>استراتيجي</option>
+      <option value="operational" ${g?.type!=='strategic'?'selected':''}>تشغيلي</option><option value="strategic" ${g?.type==='strategic'?'selected':''}>استراتيجي</option>
     </select></div><div><label>المدى</label><select name="horizon">
-      <option value="short" ${g?.horizon==='short'||!g?'selected':''}>قصير (1–3 أشهر)</option>
-      <option value="medium" ${g?.horizon==='medium'?'selected':''}>متوسط (3–12 شهرًا)</option>
-      <option value="long" ${g?.horizon==='long'?'selected':''}>طويل (أكثر من سنة)</option>
+      <option value="short" ${g?.horizon==='short'||!g?'selected':''}>قصير</option>
+      <option value="medium" ${g?.horizon==='medium'?'selected':''}>متوسط</option>
+      <option value="long" ${g?.horizon==='long'?'selected':''}>طويل</option>
     </select></div></div>
-    <div class="two"><div><label>التقدم</label><select name="progress">
-      ${[0,25,50,75,100].map(v=>`<option value="${v}" ${Number(g?.progress||0)===v?'selected':''}>${v}%</option>`).join('')}
-    </select></div><div><label>الموعد (اختياري)</label><input type="date" name="deadline" value="${g?.deadline||''}"></div></div>
-    <div id="goalParentWrap"><label>هدف استراتيجي مرتبط (اختياري)</label>
+    <div><label>الموعد (اختياري)</label><input type="date" name="deadline" value="${g?.deadline||''}"></div>
+    <div id="goalParentWrap"><label>الهدف الاستراتيجي المرتبط (اختياري)</label>
       <select name="parentId"><option value="">بدون ربط</option>${parents.map(x=>`<option value="${x.id}" ${g?.parentId===x.id?'selected':''}>${esc(x.title)}</option>`).join('')}</select>
     </div>
-    <p class="note">تسجيل الأهداف مستقل عن بيانات الخطط والمدفوعات. تحديث النسبة يدوي.</p>
     <div class="actions"><button type="submit">حفظ الهدف</button>${button('إلغاء','dismissModal(event)')}</div>
   </form>`);
   goalPresetChange(false);
@@ -549,17 +796,24 @@ function submitGoal(goalId){
   const v=Object.fromEntries(new FormData(f));
   const title=(v.preset==='custom'?v.title:v.preset)||'';
   if(!title.trim()||title.trim().length>150)return alert('اختر هدفًا أو اكتب عنوانًا مناسبًا');
+  if(!GOAL_METRICS.includes(v.metric))return alert('اختر مؤشرًا لحساب الإنجاز تلقائيًا');
+  if(v.metric==='payoff'&&!db.items.some(i=>i.id===v.itemId))return alert('اختر بندًا لربط الهدف به');
   const record=goals.find(g=>g.id===goalId)||{id:id()};
-  const changed={title:title.trim(),type:v.type,horizon:v.horizon,progress:Number(v.progress||0),deadline:v.deadline||'',parentId:v.type==='operational'?(v.parentId||''):''};
+  const changed={title:title.trim(),type:v.type,horizon:v.horizon,metric:v.metric,itemId:v.metric==='payoff'?(v.itemId||''):'',
+    progress:0,deadline:v.deadline||'',parentId:v.type==='operational'?(v.parentId||''):''};
   if(!['operational','strategic'].includes(changed.type)||!['short','medium','long'].includes(changed.horizon))return alert('نوع الهدف أو مداه غير صحيح');
   Object.assign(record,changed);
   if(!goalId)goals.push(record);
   dismissModal();saveGoals();
 }
-function setGoalProgress(goalId,value){
-  const g=goals.find(x=>x.id===goalId);if(!g)return;
-  const v=Number(value);if(![0,25,50,75,100].includes(v))return;
-  g.progress=v;saveGoals();
+function goalProgress(goal,metrics=financialGoalMetrics()){
+  const metric=inferGoalMetric(goal);
+  if(!metric)return null;
+  if(metric==='payoff'){
+    const item=db.items.find(i=>i.id===goal.itemId);
+    return item&&item.amount>0?Math.min(100,Math.round(paidFor(item)/item.amount*100)):null;
+  }
+  return metrics[metric]??null;
 }
 function deleteGoal(goalId){
   if(!confirm('حذف الهدف؟ لا تتأثر بياناتك المالية.'))return;
@@ -567,6 +821,7 @@ function deleteGoal(goalId){
   goals.forEach(g=>{if(g.parentId===goalId)g.parentId=''});
   dismissModal();saveGoals();
 }
+
 function donutChart(paid,allocated,free){
   const values=[Math.max(0,paid),Math.max(0,allocated),Math.max(0,free)].map(cents);
   const sum=values.reduce((a,b)=>a+b,0);
@@ -595,7 +850,8 @@ function dashboard(){
   const balance=ps.reduce((sum,p)=>sum+planBalance(p),0);
   const committed=ps.reduce((sum,p)=>sum+commitmentsForPlan(p.id),0);
   const available=cents(balance-committed);
-  const goalDone=goals.filter(g=>g.progress===100).length;
+  const measured=financialGoalMetrics();
+  const goalDone=goals.filter(g=>goalProgress(g,measured)===100).length;
   const regularity=stabilitySummary();
   const regularityLabel=regularity.flag==='attention'?'مبالغ تحتاج مراجعة':regularity.flag==='clear'?'لا تظهر متأخرات':'البيانات غير كافية';
   return `<div class="card">
@@ -620,6 +876,7 @@ function dashboard(){
     <div class="stat"><span class="muted">مخصص لدفعات</span><b>${money(committed)}</b></div>
     <div class="stat"><span class="muted">مجدول خلال الفترة</span><b>${money(scheduled)}</b></div>
   </div>
+  ${stabilityOverview()}
   <details class="installments"><summary>متابعة انتظام الأقساط — ${regularityLabel}</summary>${regularityPanel()}</details>
   ${goals.length?`<div class="card" style="margin-top:13px"><div class="line"><div><b>الأهداف المالية</b><div class="muted">مكتمل ${goalDone} من ${goals.length} هدف</div></div>${button('عرض الأهداف',"go('goals')",'')}</div></div>`:''}
   <details class="installments"><summary>تفاصيل مالية إضافية</summary><div class="grid" style="margin-top:12px">
@@ -705,7 +962,7 @@ function items(){
                 <option value="regular" ${installmentKind(d)==='regular'?'selected':''}>قسط عادي</option>
                 <option value="arrears" ${installmentKind(d)==='arrears'?'selected':''}>متأخرات</option>
               </select></div>
-              <div><label>ربط الدفعة بخطة</label><select onchange="linkInstallment('${i.id}','${d.id}',this.value)">
+              <div><label>ربط الدفعة بخطة</label><select class="plan-select-native" onchange="linkInstallment('${i.id}','${d.id}',this.value)">
                 ${fundingSelectOptions(pl)}</select></div></div>
             <p class="note">${pl?'مرتبطة: '+esc(fundingLabel(pl)):'غير مرتبطة بخطة'}${p&&pl!==p.id?' · ظهرت هنا لأن سدادًا خرج من هذه الخطة':''}${left>0?' · لا يُخصم إلا عند السداد':''}</p>
             ${left>0?`<div class="actions">${button('تسجيل سداد الدفعة',`pay('${i.id}','${pl}','${d.id}')`,'small')}</div>`:''}
@@ -749,8 +1006,8 @@ function changeInstallmentKind(iid,instId,kind){
   save();
 }
 function openPlan(x){active=x;tab='items';render()}
-function show(html){const m=document.getElementById('modal');m.innerHTML=`<button type="button" class="modalClose" aria-label="إغلاق" onclick="dismissModal(event)">×</button>${html}`;m.showModal();m.scrollTop=0}
-function dismissModal(e){if(e){e.preventDefault();e.stopPropagation()}const m=document.getElementById('modal');if(m.open)m.close();m.innerHTML=''}
+function show(html){const m=document.getElementById('modal');m.innerHTML=`<button type="button" class="modalClose" aria-label="إغلاق" onclick="dismissModal(event)">×</button>${html}`;m.showModal();m.scrollTop=0;decoratePlanSelectors(m)}
+function dismissModal(e){if(e){e.preventDefault();e.stopPropagation()}closePlanPicker();const m=document.getElementById('modal');if(m.open)m.close();m.innerHTML=''}
 document.getElementById('modal').addEventListener('cancel',e=>{e.preventDefault();dismissModal(e)});
 
 function editPlan(pid){
@@ -768,9 +1025,9 @@ function editPlan(pid){
     <label>ملاحظة (اختياري)</label>
     <input name="note" value="${esc(p?.note||'')}" placeholder="مثلاً: مبلغ افتراضي إلى حين الاستلام">
     <label>ترحيل من خطة سابقة (اختياري)</label>
-    <select name="carryFromPlanId" id="carrySource">
+    <select class="plan-select-native" name="carryFromPlanId" id="carrySource">
       <option value="">بدون ترحيل</option>
-      ${sources.map(x=>`<option value="${x.id}" ${p?.carryFromPlanId===x.id?'selected':''}>${esc(x.name||dateName(planDate(x)))} — غير مخصص ${money(availableForCarry(x.id,pid)-commitmentsForPlan(x.id))}</option>`).join('')}
+      ${sources.map(x=>`<option value="${x.id}" ${p?.carryFromPlanId===x.id?'selected':''}>${esc(planLabel(x))}</option>`).join('')}
     </select>
     <label>المبلغ المرحّل</label>
     <input name="carry" type="number" inputmode="decimal" min="0" step="0.01" value="${p?.carry||0}">
@@ -783,7 +1040,8 @@ function refreshCarrySources(pid){
   if(!sel)return;
   const current=sel.value;
   const sources=[...db.plans].filter(x=>x.id!==pid && planDate(x)<date).sort((a,b)=>planDate(b).localeCompare(planDate(a)));
-  sel.innerHTML='<option value="">بدون ترحيل</option>'+sources.map(x=>`<option value="${x.id}" ${current===x.id?'selected':''}>${esc(x.name||dateName(planDate(x)))} — غير مخصص ${money(availableForCarry(x.id,pid)-commitmentsForPlan(x.id))}</option>`).join('');
+  sel.innerHTML='<option value="">بدون ترحيل</option>'+sources.map(x=>`<option value="${x.id}" ${current===x.id?'selected':''}>${esc(planLabel(x))}</option>`).join('');
+  syncPlanPicker(sel);
 }
 function submitPlan(pid){
   const f=document.getElementById('f'),v=Object.fromEntries(new FormData(f));
@@ -844,7 +1102,7 @@ function editItem(iid=''){
       <label>الحد الأدنى للدفعة الأولى</label>
       <input name="cardFirstMinimum" type="number" inputmode="decimal" min="0.01" step="0.01" value="${isCard(i)?i.schedule[0]?.amount??'':''}">
       <label>ربط الدفعة الأولى بخطة (اختياري)</label>
-      <select name="cardFirstFundingPlanId">${fundingSelectOptions(i?.schedule?.[0]?.fundingPlanId||'')}</select>
+      <select class="plan-select-native" name="cardFirstFundingPlanId">${fundingSelectOptions(i?.schedule?.[0]?.fundingPlanId||'')}</select>
       <p class="note">بعد الدفعة الأولى، تُحسب دفعات البطاقة تلقائيًا بنسبة 5% شهريًا. تربط كل دفعة لاحقة بخطتها من «عرض الدفعات» بعد حفظ البند.</p>
     </div>
     <div id="regularFields" ${isCard(i)?'hidden':''}>
@@ -877,11 +1135,11 @@ function scheduleRow(month='',amount='',sid='',date='',label='',kind='regular',f
         <option value="regular" ${chosen==='regular'?'selected':''}>قسط عادي</option>
         <option value="arrears" ${chosen==='arrears'?'selected':''}>متأخرات</option>
       </select></div></div>
-    <label>ربط الدفعة بخطة (اختياري)</label><select class="sp">${fundingSelectOptions(fundingPlanId)}</select>
+    <label>ربط الدفعة بخطة (اختياري)</label><select class="sp plan-select-native">${fundingSelectOptions(fundingPlanId)}</select>
     <div class="actions"><button type="button" class="danger small" onclick="this.closest('.schedule-entry').remove()">حذف الدفعة</button></div>
   </div>`;
 }
-function addSchedule(){document.getElementById('schedule').insertAdjacentHTML('beforeend',scheduleRow())}
+function addSchedule(){document.getElementById('schedule').insertAdjacentHTML('beforeend',scheduleRow());decoratePlanSelectors(document.getElementById('schedule'))}
 function submitItem(iid){
   const f=document.getElementById('f'),v=Object.fromEntries(new FormData(f));
   const type=v.type==='card'?'card':'general',amount=Number(v.amount);
@@ -960,7 +1218,7 @@ function pay(iid,preferredPlanId='',preferredInstId=''){
       <label>تاريخ السداد</label>
       <input name="date" type="date" required value="${date}" onchange="refreshFundingPlans()">
       <label>الخطة التي سيُخصم منها السداد</label>
-      <select name="fundingPlanId" id="fundingPlan" required onchange="refreshPaymentSourcePreview()">
+      <select class="plan-select-native" name="fundingPlanId" id="fundingPlan" onchange="refreshPaymentSourcePreview()">
         ${paymentPlanOptions(date,preferred?.id||'')}
       </select>
       <div class="note" id="paymentSourcePreview" role="status" aria-live="polite"></div>
@@ -983,8 +1241,8 @@ function paymentPlanOptions(date,selectedId=''){
   const upcoming=[...db.plans].filter(p=>!activeIds.has(p.id)&&planBalance(p)>0.005)
     .sort((a,b)=>planDate(a).localeCompare(planDate(b)));
   return `<option value="" disabled ${!selectedId?'selected':''}>اختر خطة الدفع بنفسك</option>`+
-    valid.map(p=>`<option value="${p.id}" ${selectedId===p.id?'selected':''}>${esc(planLabel(p))} — رصيد ${money(planBalance(p))}</option>`).join('')+
-    upcoming.map(p=>`<option value="${p.id}" disabled>${esc(planLabel(p))} — غير متاحة قبل ${dateName(planDate(p))}</option>`).join('');
+    valid.map(p=>`<option value="${p.id}" ${selectedId===p.id?'selected':''}>${esc(planLabel(p))}</option>`).join('')+
+    upcoming.map(p=>`<option value="${p.id}" disabled>${esc(planLabel(p))}</option>`).join('');
 }
 /* اختيار دفعة أخرى يجب ألا يغيّر مصدر السداد المحدد يدويًا. */
 function refreshPaymentPlanChoice(){refreshPaymentSourcePreview()}
@@ -1011,6 +1269,7 @@ function refreshFundingPlans(){
   const options=fundingPlansFor(date);
   const stillValid=options.some(p=>p.id===prev);
   sel.innerHTML=paymentPlanOptions(date,stillValid?prev:'');
+  syncPlanPicker(sel);
   refreshPaymentSourcePreview();
 }
 function submitPay(iid){
@@ -1076,6 +1335,7 @@ function resetApp(){
   localStorage.removeItem(KEY);
   db={plans:[],items:[],payments:[]};
   localStorage.removeItem(GOALS_KEY);goals=[];
+  localStorage.removeItem(STABILITY_KEY);stabilitySettings={target:0,peak:0};
   active=null;
   tab='dashboard';
   period='month';
@@ -1089,7 +1349,7 @@ function resetApp(){
 let pendingImport=null;
 const MAX_IMPORT_BYTES=3*1024*1024;
 function exportData(){
-  const payload={format:'mabaleghi-data',schemaVersion:2,exportedAt:new Date().toISOString(),data:db,goals};
+  const payload={format:'mabaleghi-data',schemaVersion:2,exportedAt:new Date().toISOString(),data:db,goals,stabilitySettings};
   const fileName='mabaleghi-backup-'+localToday()+'.json';
   const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json;charset=utf-8'}));
   const link=document.createElement('a');
@@ -1242,7 +1502,8 @@ async function readImportFile(input){
     const payload=JSON.parse(await file.text());
     const imported=normalizeDataFile(payload);
     const importedGoals=Array.isArray(payload.goals)?validGoals(payload.goals):null;
-    pendingImport={model:imported,goals:importedGoals,meta:payload.meta||{},name:file.name};
+    const importedSettings=payload.stabilitySettings?validateStabilitySettings(payload.stabilitySettings):null;
+    pendingImport={model:imported,goals:importedGoals,settings:importedSettings,meta:payload.meta||{},name:file.name};
     const m=pendingImport.meta, caution=m.illustrative?'هذه خطة مقترحة بأرقام افتراضية أو غير مؤكدة. لا تعتبر أي مبلغ مستلمًا أو أي بند مسددًا حتى تسجله بنفسك.':'';
     const info=`${imported.plans.length} خطة، ${imported.items.length} بند، ${imported.payments.length} سداد مسجل${importedGoals?'، '+importedGoals.length+' هدف':''}`;
     show(`<h2>معاينة الاستيراد</h2>
@@ -1265,6 +1526,7 @@ function applyImport(mode){
   if(!pendingImport)return alert('اختر ملفًا للاستيراد أولًا');
   const source=pendingImport.model;
   const sourceGoals=pendingImport.goals;
+  const sourceSettings=pendingImport.settings;
   let result,added={plans:0,items:0,payments:0},updatedItems=0;
   if(mode==='replace'){
     if(!confirm('سيتم حذف كل بيانات مبالغي الحالية واستبدالها ببيانات الملف. هل أنت متأكد؟'))return;
@@ -1304,6 +1566,7 @@ function applyImport(mode){
     goals=nextGoals;
     try{localStorage.setItem(GOALS_KEY,JSON.stringify(goals))}catch{alert('تم استيراد البيانات المالية، لكن لم تُحفظ الأهداف لعدم توفر مساحة تخزين كافية')}
   }
+  if(sourceSettings&&mode==='replace'){stabilitySettings=sourceSettings;localStorage.setItem(STABILITY_KEY,JSON.stringify(stabilitySettings))}
   pendingImport=null;active=null;tab='dashboard';
   dismissModal();render();
   if(mode==='replace')alert('تم استبدال بيانات مبالغي بالملف المستورد بنجاح.');
