@@ -128,6 +128,15 @@ h3{font-size:16px}
 .health-metric .mini-bar{height:5px;border-radius:8px;background:#e2eaf0;overflow:hidden;margin-top:7px}
 .health-metric .mini-bar>div{height:100%;background:#259278}
 @media(max-width:360px){.health-meter{width:132px}.health-metric .metric-number{font-size:17px}}
+.health-finances{background:#f5f8fa;border-radius:12px;padding:8px 12px;margin-top:10px}
+.health-finance-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;font-size:13px}
+.health-finance-row+ .health-finance-row{border-top:1px solid #e7edf1}
+.health-finance-row b{white-space:nowrap;font-variant-numeric:tabular-nums}
+.health-finance-row.health-net{font-weight:650}
+.liquidity-dues{max-height:260px;overflow:auto;overscroll-behavior:contain;margin-top:7px}
+.liquidity-dues .line{font-size:12px}
+.liquidity-dues .line>div{min-width:0}
+.liquidity-dues .line>b{white-space:nowrap}
 </style>
 </head>
 <body>
@@ -244,6 +253,19 @@ function outgoingCarry(planId,excludePlanId=''){
 }
 function planMoney(p){return Number(p.amount||0)+Number(p.carry||0)}
 function planBalance(p){return planMoney(p)-outgoingCarry(p.id)-totalPaid(p)}
+/* رصيد الخطة حتى تاريخ محدد: لا تُخصم حوالة أو دفعة مؤرخة بالمستقبل من النقد الحالي. */
+function planBalanceAt(p,asOf){
+  const spent=db.payments.filter(x=>x.planId===p.id&&x.date<=asOf).reduce((sum,x)=>sum+Number(x.amount||0),0);
+  const transferred=db.plans.filter(x=>x.carryFromPlanId===p.id&&planDate(x)<=asOf).reduce((sum,x)=>sum+Number(x.carry||0),0);
+  return cents(planMoney(p)-spent-transferred);
+}
+function cashOnHandAt(asOf){
+  const plans=db.plans.filter(p=>planDate(p)<=asOf);
+  return plans.length?cents(plans.reduce((sum,p)=>sum+planBalanceAt(p,asOf),0)):null;
+}
+function remainingAt(item,asOf){
+  return Math.max(0,Number(item.amount||0)-db.payments.filter(p=>p.itemId===item.id&&(!asOf||p.date<=asOf)).reduce((sum,p)=>sum+Number(p.amount||0),0));
+}
 function availableForCarry(sourceId,targetId=''){
   const source=db.plans.find(p=>p.id===sourceId);
   if(!source)return 0;
@@ -264,13 +286,13 @@ function monthEndDay(month){const [year,m]=month.split('-').map(Number);return n
   It does not include new purchases, bank fees or interest. Actual payment
   status is never guessed: it comes only from db.payments.
 */
-function itemSchedule(item){
+function itemSchedule(item,asOf=''){
   if(!isCard(item))return item.schedule||[];
   const first=(item.schedule||[])[0];
   if(!first||!first.month)return [];
   let balance=cents(item.amount),start=first.month;
   const byPaidMonth={};
-  for(const p of db.payments.filter(p=>p.itemId===item.id)){
+  for(const p of db.payments.filter(p=>p.itemId===item.id&&(!asOf||p.date<=asOf))){
     const month=ym(p.date);
     byPaidMonth[month]=cents((byPaidMonth[month]||0)+Number(p.amount||0));
   }
@@ -288,14 +310,14 @@ function itemSchedule(item){
   }
   return months;
 }
-function cardScheduleBalances(item){
-  const rows=itemSchedule(item);
-  if(remaining(item)<0.005){
+function cardScheduleBalances(item,asOf=''){
+  const rows=itemSchedule(item,asOf);
+  if(remainingAt(item,asOf)<0.005){
     return Object.fromEntries(rows.map(d=>[d.id,{paid:d.amount,remaining:0}]));
   }
   const actualForRow={};
   const validIds=new Set(rows.map(d=>d.id));
-  for(const p of db.payments.filter(p=>p.itemId===item.id)){
+  for(const p of db.payments.filter(p=>p.itemId===item.id&&(!asOf||p.date<=asOf))){
     const rowId=p.installmentId && validIds.has(p.installmentId)
       ? p.installmentId
       : (ym(p.date)===rows[0]?.month?rows[0]?.id:cardInstallmentId(item,ym(p.date)));
@@ -403,15 +425,15 @@ function choosePlanOption(idx){
 function fundingOverdrawn(){return db.plans.find(p=>commitmentsForPlan(p.id)>planBalance(p)+0.005)}
 function instSortDate(d){return d.date||d.month+'-31'}
 function instLabel(d){return (d.label?esc(d.label)+' — ':'')+(d.date?dateName(d.date):monthName(d.month))}
-function scheduleBalances(item){
-  if(isCard(item))return cardScheduleBalances(item);
+function scheduleBalances(item,asOf=''){
+  if(isCard(item))return cardScheduleBalances(item,asOf);
   const explicit={};
   let general=0;
-  db.payments.filter(p=>p.itemId===item.id).forEach(p=>{
+  db.payments.filter(p=>p.itemId===item.id&&(!asOf||p.date<=asOf)).forEach(p=>{
     if(p.installmentId) explicit[p.installmentId]=(explicit[p.installmentId]||0)+Number(p.amount||0);
     else general+=Number(p.amount||0);
   });
-  const rows=itemSchedule(item).map((d,idx)=>({...d,_idx:idx})).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b))||a._idx-b._idx);
+  const rows=itemSchedule(item,asOf).map((d,idx)=>({...d,_idx:idx})).sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b))||a._idx-b._idx);
   const out={};
   rows.forEach(d=>{
     const linked=Math.min(Number(d.amount||0),explicit[d.id]||0);
@@ -591,11 +613,11 @@ function regularityPanel(){
 
 function goalGroupTitle(key){return ({strategic:'الأهداف الاستراتيجية',short:'قصيرة المدى',medium:'متوسطة المدى',long:'طويلة المدى'})[key]||key}
 /* النسب مستمدة من السجلات؛ لا تُفترض نسبة 100% عند غياب البيانات. */
-function paymentAllocation(item){
-  const rows=itemSchedule(item).filter(d=>d.date&&validDate(d.date))
+function paymentAllocation(item,asOf=''){
+  const rows=itemSchedule(item,asOf).filter(d=>d.date&&validDate(d.date))
     .map(d=>({id:d.id,due:d.date,amount:Number(d.amount||0),paid:0,onTime:0})).sort((a,b)=>a.due.localeCompare(b.due));
   const byId=new Map(rows.map(d=>[d.id,d]));
-  const paid=[...db.payments].filter(p=>p.itemId===item.id).sort((a,b)=>a.date.localeCompare(b.date));
+  const paid=[...db.payments].filter(p=>p.itemId===item.id&&(!asOf||p.date<=asOf)).sort((a,b)=>a.date.localeCompare(b.date));
   paid.forEach(p=>{
     let amount=Number(p.amount||0);
     if(p.installmentId&&byId.has(p.installmentId)){
@@ -620,7 +642,7 @@ function paymentAllocation(item){
 function financialGoalMetrics(asOf=localToday()){
   const current=ym(asOf),last3=[addMonths(current,-3),addMonths(current,-2),addMonths(current,-1)];
   const dates=[];
-  for(const item of db.items){for(const x of paymentAllocation(item))dates.push({...x,card:isCard(item),kind:installmentKind(itemSchedule(item).find(d=>d.id===x.id)||{})});}
+  for(const item of db.items){for(const x of paymentAllocation(item,asOf))dates.push({...x,itemName:item.name,card:isCard(item),kind:installmentKind(itemSchedule(item,asOf).find(d=>d.id===x.id)||{})});}
   const ordinary=dates.filter(x=>!x.card&&x.kind==='regular');
   const cardDue=dates.filter(x=>x.card&&x.due<=asOf&&x.due.slice(0,7)>=addMonths(current,-2));
   const st=stabilitySummary(asOf);
@@ -633,18 +655,32 @@ function financialGoalMetrics(asOf=localToday()){
   const previous=last3[2];const previousRegular=ordinary.filter(x=>ym(x.due)===previous);
   const month=previousRegular.length?previousRegular.every(x=>x.onTime+0.005>=x.amount)?100:0:null;
   const cards=cardDue.length?Math.round(100*cardDue.reduce((a,x)=>a+Math.min(x.amount,x.onTime),0)/cardDue.reduce((a,x)=>a+x.amount,0)):null;
-  const plansNow=db.plans.filter(p=>planDate(p)<=asOf);
   const until=plusCalendarDays(asOf,30);
-  const toPay=dates.filter(x=>x.due<=until).reduce((sum,x)=>sum+Math.max(0,x.amount-x.paid),0);
-  // الدفعات المتأخرة المسجلة دون تاريخ تُحتسب ضمن احتياج السيولة، لا انتظام الأقساط.
-  const undatedOpen=db.items.reduce((sum,item)=>{
-    const b=scheduleBalances(item);
-    return sum+itemSchedule(item).filter(d=>(!d.date||!validDate(d.date))&&d.month<=ym(until)).reduce((a,d)=>a+Math.max(0,b[d.id]?.remaining||0),0);
-  },0);
-  const liquidityCash=plansNow.length?cents(plansNow.reduce((sum,p)=>sum+planBalance(p),0)-toPay-undatedOpen):null;
+  const cashOnHand=cashOnHandAt(asOf);
+  // المستحق = غير المسدد حتى نهاية الثلاثين يومًا المقبلة، بما في ذلك المتأخر السابق.
+  const dueDated=cents(dates.filter(x=>x.due<=until).reduce((sum,x)=>sum+Math.max(0,x.amount-x.paid),0));
+  const overdue=cents(dates.filter(x=>x.due<asOf).reduce((sum,x)=>sum+Math.max(0,x.amount-x.paid),0));
+  const dueEntries=dates.filter(x=>x.due<=until&&x.amount-x.paid>0.005)
+    .map(x=>({name:x.itemName,date:x.due,amount:cents(x.amount-x.paid),card:x.card,kind:x.kind}));
+  const undatedEntries=[];
+  for(const item of db.items){
+    const b=scheduleBalances(item,asOf);
+    for(const d of itemSchedule(item,asOf)){
+      if((!d.date||!validDate(d.date))&&d.month<=ym(until)){
+        const outstanding=cents(Math.max(0,b[d.id]?.remaining||0));
+        if(outstanding>0.005)undatedEntries.push({name:item.name,date:'',month:d.month,amount:outstanding,card:isCard(item),kind:installmentKind(d)});
+      }
+    }
+  }
+  const undatedOpen=cents(undatedEntries.reduce((sum,x)=>sum+x.amount,0));
+  dueEntries.push(...undatedEntries);
+  dueEntries.sort((a,b)=>(a.date||a.month+'-31').localeCompare(b.date||b.month+'-31'));
+  const obligationsDue=cents(dueDated+undatedOpen);
+  // هذه نتيجة مستقبلية بعد الاستحقاقات، وليست الرصيد الموجود الآن في الحساب.
+  const liquidityCash=cashOnHand===null?null:cents(cashOnHand-obligationsDue);
   const liquidity=stabilitySettings.target>0&&liquidityCash!==null?
     Math.round(Math.min(100,Math.max(0,liquidityCash/stabilitySettings.target*100))):null;
-  const metrics={arrears,regularity,cards,liquidity,month,liquidityCash,stability:null,regularMonths};
+  const metrics={arrears,regularity,cards,liquidity,month,liquidityCash,cashOnHand,obligationsDue,overdue,undatedOpen,dueEntries,stability:null,regularMonths};
   if([arrears,regularity,cards,liquidity].every(v=>v!==null)){
     metrics.stability=Math.round(arrears*.30+regularity*.30+cards*.20+liquidity*.20);
     if(metrics.stability>stabilitySettings.peak){
@@ -661,7 +697,7 @@ function metricDetails(metric){return {
   arrears:'المسدد من إجمالي الدفعات المصنفة متأخرات',
   regularity:'الأشهر المنتظمة من آخر 3 أشهر مكتملة',
   cards:'الحدود الدنيا المستحقة خلال آخر 3 أشهر وحتى اليوم',
-  liquidity:'السيولة بعد مستحقات 30 يومًا مقارنة بالحد الذي اخترته',
+  liquidity:'الصافي بعد الاستحقاقات خلال 30 يومًا مقارنة بالحد الذي اخترته',
   month:'آخر شهر مكتمل: جميع الأقساط في موعدها',
   payoff:'المسدد من قيمة البند المختار'
 }[metric]||'اختر مؤشرًا لاحتساب هذا الهدف'}
@@ -685,10 +721,17 @@ function stabilityOverview(full=false){
   return `<section class="card health-card" aria-label="مؤشر الاستقرار المالي">
     <div class="health-head"><h2 style="margin:0">الاستقرار المالي</h2><span class="health-tag">تلقائي</span></div>
     <div class="health-main">${stabilityGauge(pct)}
-      <div class="health-summary"><div class="muted">السيولة بعد المستحقات</div>
-        <div class="big ${m.liquidityCash!==null&&m.liquidityCash<0?'neg':''}">${m.liquidityCash===null?'—':money(m.liquidityCash)}</div>
+      <div class="health-summary"><div class="muted">المتوفر الآن</div>
+        <div class="big ${m.cashOnHand!==null&&m.cashOnHand<0?'neg':''}">${m.cashOnHand===null?'—':money(m.cashOnHand)}</div>
         <div class="muted">أفضل نتيجة: ${peak?peak+'%':'—'}</div></div>
     </div>
+    <div class="health-finances">
+      <div class="health-finance-row"><span>غير مسدد حتى 30 يومًا</span><b>${m.cashOnHand===null?'—':money(m.obligationsDue)}</b></div>
+      <div class="health-finance-row health-net"><span>الصافي بعد الاستحقاقات</span><b class="${m.liquidityCash!==null&&m.liquidityCash<0?'neg':''}">${m.liquidityCash===null?'—':money(m.liquidityCash)}</b></div>
+    </div>
+    ${m.liquidityCash!==null&&m.liquidityCash<0?`<p class="note">عجز تغطية الاستحقاقات: ${money(-m.liquidityCash)}. هذا لا يغيّر الرصيد المتوفر الآن.</p>`:''}
+    ${m.dueEntries?.length?`<details class="installments"><summary>تفصيل المستحقات (${m.dueEntries.length})</summary>
+      <div class="liquidity-dues">${m.dueEntries.map(x=>`<div class="line"><div><b>${esc(x.name)}</b><div class="muted">${x.date?dateName(x.date):monthName(x.month)+' · يوم غير محدد'}${x.card?' · بطاقة':''}</div></div><b>${money(x.amount)}</b></div>`).join('')}</div></details>`:''}
     <div class="health-target"><span class="muted">حد السيولة: ${stabilitySettings.target?money(stabilitySettings.target):'غير محدد'}</span>${button('تحديد الحد','editLiquidityTarget()')}</div>
     ${full?metricTiles(m):`<details class="installments"><summary>تفاصيل المؤشر</summary>${metricTiles(m)}<p class="note">الأوزان: متأخرات 30%، أقساط 30%، بطاقات 20%، سيولة 20%.</p></details>`}
     ${missing.length?`<p class="note">لا تُحسب النسبة الكلية قبل توفر: ${missing.map(k=>GOAL_METRIC_LABELS[k]).join('، ')}.</p>`:''}
@@ -853,6 +896,7 @@ function dashboard(){
   const measured=financialGoalMetrics();
   const goalDone=goals.filter(g=>goalProgress(g,measured)===100).length;
   const regularity=stabilitySummary();
+  const futurePlanCount=ps.filter(p=>planDate(p)>localToday()).length;
   const regularityLabel=regularity.flag==='attention'?'مبالغ تحتاج مراجعة':regularity.flag==='clear'?'لا تظهر متأخرات':'البيانات غير كافية';
   return `<div class="card">
     <h2>لوحة التحكم</h2>
@@ -868,6 +912,7 @@ function dashboard(){
     <div class="muted">الرصيد النقدي المتبقي للخطط في الفترة</div>
     <div class="big ${balance<-0.005?'neg':''}">${money(balance)}</div>
     <p class="note">المتاح غير المخصص ${money(available)} — لا تخصم الدفعة المجدولة نقديًا حتى تسجل سدادها.</p>
+    ${futurePlanCount?`<p class="note">يشمل عرض الفترة ${futurePlanCount} خطة لم يحِن تاريخ توفر مبلغها بعد. يظهر المتوفر الفعلي لليوم في مؤشر الاستقرار أدناه.</p>`:''}
     ${donutChart(paidFromPlans,committed,available)}
   </div>
   <div class="grid">
@@ -1282,6 +1327,7 @@ function submitPay(iid){
   if(amount>remaining(item)+0.001)return alert('المبلغ يتجاوز المتبقي على البند');
   if(!plan)return alert('اختر خطة السداد منها بنفسك');
   if(!v.date||planDate(plan)>v.date)return alert('تاريخ توفر مبلغ الخطة يأتي بعد تاريخ السداد');
+  if(v.date>localToday())return alert('لا يمكن تسجيل سداد بتاريخ مستقبلي. أضف الدفعة إلى الجدولة بدلًا من ذلك.');
   if(amount>planBalance(plan)+0.001)return alert('المبلغ يتجاوز الرصيد المتبقي في الخطة المختارة');
   if(v.installmentId){
     const inst=itemSchedule(item).find(d=>d.id===v.installmentId);
