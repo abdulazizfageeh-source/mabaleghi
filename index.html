@@ -137,6 +137,24 @@ h3{font-size:16px}
 .liquidity-dues .line{font-size:12px}
 .liquidity-dues .line>div{min-width:0}
 .liquidity-dues .line>b{white-space:nowrap}
+
+/* البنود التي أغلقت بالكامل: شريط رمادي مختصر، تفاصيله بالضغط */
+.card.settled-card{padding:0;background:#eff2f5;border:1px solid #d9e0e5;box-shadow:none;overflow:hidden}
+.settled-details{margin:0}
+.settled-details>.settled-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:54px;padding:13px 15px;cursor:pointer;list-style:none;color:#465565}
+.settled-summary::-webkit-details-marker{display:none}
+.settled-summary::marker{content:''}
+.settled-summary:focus-visible{outline:2px solid #657789;outline-offset:-3px;border-radius:12px}
+.settled-title{display:block;font-size:15px;font-weight:700;min-width:0;overflow-wrap:anywhere}
+.settled-end{display:inline-flex;align-items:center;gap:10px;flex-shrink:0;color:#607080;font-size:12px;font-weight:700}
+.settled-end .settled-check{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#dbe3e8;color:#536779;font-size:13px}
+.settled-end .settled-caret{display:inline-block;color:#7a8995;font-size:17px;font-weight:400;transition:transform .15s ease}
+.settled-details[open] .settled-caret{transform:rotate(180deg)}
+.settled-details[open]>.settled-summary{border-bottom:1px solid #d7dfe6}
+.settled-body{padding:12px 15px 15px;background:#f8fafb}
+.settled-body .stat{background:#edf2f5}
+.settled-body .installments{background:#fff}
+@media(max-width:360px){.settled-end{gap:6px;font-size:11px}.settled-details>.settled-summary{padding:12px}}
 </style>
 </head>
 <body>
@@ -508,6 +526,12 @@ function planPaymentRow(payment){
 }
 function button(label,fn,cl='secondary'){const noValidate=(label==='إلغاء'||label==='إغلاق')?' formnovalidate':'';return `<button type="button"${noValidate} class="${cl}" onclick="${fn}">${label}</button>`}
 const expandedInstallments=new Set();
+/* حالة فتح البند المسدد مؤقتة للواجهة فقط؛ لا تُكتب في بيانات المستخدم. */
+const expandedSettledItems=new Set();
+function toggleSettledItem(iid,node){
+  if(node.open)expandedSettledItems.add(iid);
+  else expandedSettledItems.delete(iid);
+}
 const openedGoalGroups=new Set();
 function toggleInstallments(iid,node){
   if(node.open===expandedInstallments.has(iid))return;
@@ -521,6 +545,10 @@ function render(){
   const container=document.getElementById('view');
   container.querySelectorAll('details[data-goal-group]').forEach(node=>{
     const key=node.dataset.goalGroup;if(node.open)openedGoalGroups.add(key);else openedGoalGroups.delete(key);
+  });
+  container.querySelectorAll('details.settled-details').forEach(node=>{
+    const iid=node.closest('[id^="item-"]')?.id.slice(5);
+    if(iid){if(node.open)expandedSettledItems.add(iid);else expandedSettledItems.delete(iid)}
   });
   container.querySelectorAll('details.installments').forEach(node=>{
     const iid=node.closest('[id^="item-"]')?.id.slice(5);
@@ -989,9 +1017,14 @@ function items(){
     const all=p?planRelatedInstallments(i,p.id):itemSchedule(i).slice().sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
     const paymentsFromPlan=p?planPayments(p.id).filter(x=>x.itemId===i.id):[];
     const sumFromPlan=cents(paymentsFromPlan.reduce((sum,x)=>sum+Number(x.amount||0),0));
-    return `<div class="card" id="item-${esc(i.id)}">
-      <div class="line"><div><b>${esc(i.name)}</b><div class="muted">${isCard(i)?'بطاقة ائتمانية · حد أدنى ثم 5%':'التزام عادي'}</div></div>
-        <span class="tag">${remaining(i)===0?'مسدد':paidFor(i)>0?'جزئي':'غير مسدد'}</span></div>
+    const settled=paidFor(i)>0&&cents(remaining(i))<=0;
+    return `<div class="card${settled?' settled-card':''}" id="item-${esc(i.id)}">
+      ${settled?`<details class="settled-details" ${expandedSettledItems.has(i.id)?'open':''} ontoggle="toggleSettledItem('${i.id}',this)">
+        <summary class="settled-summary"><span class="settled-title">${esc(i.name)}</span>
+          <span class="settled-end"><span class="settled-check" aria-hidden="true">✓</span>مسدد بالكامل<span class="settled-caret" aria-hidden="true">⌄</span></span></summary>
+        <div class="settled-body">`:
+        `<div class="line"><div><b>${esc(i.name)}</b><div class="muted">${isCard(i)?'بطاقة ائتمانية · حد أدنى ثم 5%':'التزام عادي'}</div></div>
+        <span class="tag">${paidFor(i)>0?'جزئي':'غير مسدد'}</span></div>`}
       ${i.note?`<p class="note">${esc(i.note)}</p>`:''}
       ${p?`<p class="note">مسدد من هذه الخطة: <b>${money(sumFromPlan)}</b> · دفعات مربوطة: ${itemSchedule(i).filter(d=>linkedPlanId(i,d)===p.id).length}</p>`:''}
       <div class="grid"><div class="stat"><span class="muted">قيمة البند</span><b>${money(i.amount)}</b></div>
@@ -1015,9 +1048,10 @@ function items(){
         }).join('')||'<p class="note">لا توجد دفعات. اضغط تعديل لإضافتها.</p>':''}
         ${isCard(i)?'<p class="note">دفعات البطاقة المستقبلية تقديرية بنسبة 5% من الرصيد المتبقي، وتتغير إذا سددت أكثر من الحد الأدنى.</p>':''}
       </details>
-      <div class="actions">${button('تسجيل سداد',`pay('${i.id}')`,'')}
+      <div class="actions">${settled?'':button('تسجيل سداد',`pay('${i.id}')`,'')}
         ${button('تعديل',`editItem('${i.id}')`)}${button('سجل السداد',`history('${i.id}')`)}
         ${button('حذف',`deleteItem('${i.id}')`,'danger')}</div>
+      ${settled?'</div></details>':''}
     </div>`;
   }).join('')||'<div class="card">لا توجد بنود مرتبطة بهذا العرض.</div>'}
   <div class="item-list-pad"></div><button type="button" class="quickAdd" onclick="editItem()">＋ إضافة بند</button>`;
