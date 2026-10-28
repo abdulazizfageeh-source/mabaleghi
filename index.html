@@ -155,6 +155,24 @@ h3{font-size:16px}
 .settled-body .stat{background:#edf2f5}
 .settled-body .installments{background:#fff}
 @media(max-width:360px){.settled-end{gap:6px;font-size:11px}.settled-details>.settled-summary{padding:12px}}
+
+/* الدفعات المسددة: مختصرة ورمادية أسفل الاستحقاقات، ويمكن فتح تفاصيلها */
+.installment-completed-heading{margin:15px 1px 6px;color:#70808c;font-size:12px;font-weight:700}
+.installments .installment-row.unpaid-installment{border-top:1px solid #edf1f4;margin-top:10px;padding-top:10px}
+.paid-installment{background:#eff2f5;border:1px solid #dce3e8;border-radius:12px;margin-top:7px;overflow:hidden;color:#485867}
+.paid-installment>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:48px;padding:10px 12px;font-size:13px;cursor:pointer;color:#465565}
+.paid-installment>summary::-webkit-details-marker{display:none}
+.paid-installment>summary::marker{content:''}
+.paid-installment>summary::after{display:none}
+.paid-installment>summary:focus-visible{outline:2px solid #657789;outline-offset:-2px}
+.paid-installment-label{min-width:0;font-weight:650;overflow-wrap:anywhere}
+.paid-installment-status{display:inline-flex;align-items:center;gap:7px;flex-shrink:0;font-size:12px;color:#607180;font-weight:650}
+.paid-installment-check{display:inline-grid;place-items:center;width:19px;height:19px;border-radius:50%;background:#dce5eb;color:#506776;font-size:12px}
+.paid-installment-caret{color:#7b8995;font-size:16px;transition:transform .15s}
+.paid-installment[open] .paid-installment-caret{transform:rotate(180deg)}
+.paid-installment-body{padding:4px 12px 12px;border-top:1px solid #dce3e8;background:#f9fafb}
+.installments .paid-installment-body .installment-row{margin-top:0;padding-top:5px;border:0}
+.paid-installment-body .two{margin-top:3px}
 </style>
 </head>
 <body>
@@ -526,6 +544,18 @@ function planPaymentRow(payment){
 }
 function button(label,fn,cl='secondary'){const noValidate=(label==='إلغاء'||label==='إغلاق')?' formnovalidate':'';return `<button type="button"${noValidate} class="${cl}" onclick="${fn}">${label}</button>`}
 const expandedInstallments=new Set();
+/* حالة فتح كل قسط مسدد خاصة بالعرض فقط، ولا تحفظ داخل بيانات التمويل. */
+const expandedPaidInstallments=new Set();
+function togglePaidInstallment(key,node){
+  if(node.open)expandedPaidInstallments.add(key);
+  else expandedPaidInstallments.delete(key);
+}
+function sortedInstallmentsForDisplay(rows,balances){
+  return rows.map((inst,index)=>({inst,index,left:cents(balances[inst.id]?.remaining??inst.amount)}))
+    .sort((a,b)=>Number(a.left<=0.005)-Number(b.left<=0.005)
+      ||instSortDate(a.inst).localeCompare(instSortDate(b.inst))||a.index-b.index);
+}
+
 /* حالة فتح البند المسدد مؤقتة للواجهة فقط؛ لا تُكتب في بيانات المستخدم. */
 const expandedSettledItems=new Set();
 function toggleSettledItem(iid,node){
@@ -549,6 +579,10 @@ function render(){
   container.querySelectorAll('details.settled-details').forEach(node=>{
     const iid=node.closest('[id^="item-"]')?.id.slice(5);
     if(iid){if(node.open)expandedSettledItems.add(iid);else expandedSettledItems.delete(iid)}
+  });
+  container.querySelectorAll('details.paid-installment').forEach(node=>{
+    const key=node.dataset.paidKey;
+    if(key){if(node.open)expandedPaidInstallments.add(key);else expandedPaidInstallments.delete(key)}
   });
   container.querySelectorAll('details.installments').forEach(node=>{
     const iid=node.closest('[id^="item-"]')?.id.slice(5);
@@ -1031,10 +1065,11 @@ function items(){
         <div class="stat"><span class="muted">المتبقي</span><b>${money(remaining(i))}</b></div></div>
       ${p&&paymentsFromPlan.length?`<details class="installments"><summary>سجلات السداد من هذه الخطة (${paymentsFromPlan.length})</summary>${paymentsFromPlan.map(planPaymentRow).join('')}</details>`:''}
       <details class="installments" ${expandedInstallments.has(i.id)?'open':''} ontoggle="toggleInstallments('${i.id}',this)"><summary>${p?'دفعات مربوطة أو مسددة من الخطة':'عرض الدفعات'} (${all.length})</summary>
-        ${expandedInstallments.has(i.id)?all.map(d=>{
-          const pl=linkedPlanId(i,d),left=bal[d.id]?.remaining??d.amount;
-          return `<div class="installment-row"><div class="line"><div><b>${instLabel(d)}</b>
-            <div class="muted">قيمة الدفعة: ${money(d.amount)}</div></div><span class="pill">المتبقي ${money(left)}</span></div>
+        ${expandedInstallments.has(i.id)?sortedInstallmentsForDisplay(all,bal).map(({inst:d,left},index,sorted)=>{
+          const pl=linkedPlanId(i,d),isPaid=left<=0.005;
+          const key=i.id+'_'+d.id;
+          const body=`<div class="installment-row${isPaid?'':' unpaid-installment'}"><div class="line"><div><b>${instLabel(d)}</b>
+            <div class="muted">قيمة الدفعة: ${money(d.amount)}</div></div><span class="pill">${isPaid?'مسدد بالكامل':'المتبقي '+money(left)}</span></div>
             <div class="two"><div><label>نوع الدفعة</label>
               <select onchange="changeInstallmentKind('${i.id}','${d.id}',this.value)">
                 <option value="regular" ${installmentKind(d)==='regular'?'selected':''}>قسط عادي</option>
@@ -1045,6 +1080,15 @@ function items(){
             <p class="note">${pl?'مرتبطة: '+esc(fundingLabel(pl)):'غير مرتبطة بخطة'}${p&&pl!==p.id?' · ظهرت هنا لأن سدادًا خرج من هذه الخطة':''}${left>0?' · لا يُخصم إلا عند السداد':''}</p>
             ${left>0?`<div class="actions">${button('تسجيل سداد الدفعة',`pay('${i.id}','${pl}','${d.id}')`,'small')}</div>`:''}
           </div>`;
+          if(!isPaid)return body;
+          const firstPaid=index===0||sorted[index-1].left>0.005;
+          const paidEntries=db.payments.filter(x=>x.itemId===i.id&&x.installmentId===d.id);
+          const paymentDetails=paidEntries.length?`<div class="note">${paidEntries.map(x=>`سداد ${money(x.amount)} · ${dateName(x.date)} · من «${esc(fundingLabel(x.planId))}»`).join(' · ')}</div>`:'';
+          return `${firstPaid?`<div class="installment-completed-heading">الأقساط المسددة (${sorted.filter(x=>x.left<=0.005).length})</div>`:''}
+            <details class="paid-installment" data-paid-key="${esc(key)}" ${expandedPaidInstallments.has(key)?'open':''} ontoggle="togglePaidInstallment('${key}',this)">
+              <summary><span class="paid-installment-label">${instLabel(d)}</span><span class="paid-installment-status"><span class="paid-installment-check" aria-hidden="true">✓</span>مسدد<span class="paid-installment-caret" aria-hidden="true">⌄</span></span></summary>
+              <div class="paid-installment-body">${body}${paymentDetails}<div class="actions">${button('سجل السداد',`history('${i.id}')`,'small secondary')}</div></div>
+            </details>`;
         }).join('')||'<p class="note">لا توجد دفعات. اضغط تعديل لإضافتها.</p>':''}
         ${isCard(i)?'<p class="note">دفعات البطاقة المستقبلية تقديرية بنسبة 5% من الرصيد المتبقي، وتتغير إذا سددت أكثر من الحد الأدنى.</p>':''}
       </details>
