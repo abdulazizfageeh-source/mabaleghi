@@ -1039,22 +1039,19 @@ function plans(){
 }
 function items(){
   const p=active?db.plans.find(x=>x.id===active):null;
-  // Keep the existing order among open items and among settled items;
-  // only move fully paid items below all open items (also in plan-filtered views).
-  const orderedItems=(p?planRelatedItems(p.id):[...db.items].reverse())
-    .map(item=>({item,settled:paidFor(item)>0&&cents(remaining(item))<=0}));
-  orderedItems.sort((a,b)=>Number(a.settled)-Number(b.settled));
+  const its=p?planRelatedItems(p.id):[...db.items].reverse();
   return `<div class="card">
     <div class="line"><h2>${p?'بنود مرتبطة بخطة '+esc(planLabel(p)):'جميع البنود'}</h2>
       ${p?button('كل البنود',"go('items')"):''}</div>
     <p class="note">${p?'يعرض هذا القسم كل بند له دفعة مربوطة بالخطة أو عملية سداد خرجت منها، حتى لو لم تكن الدفعة مربوطة مسبقًا.':'أنشئ البنود مستقلّة عن الخطط. افتح «عرض الدفعات» لتحديد خطة مستقلة لكل دفعة، أو لتعديل نوعها.'}</p>
     ${p?`<p class="muted">الرصيد النقدي: ${money(planBalance(p))} · المخصص: ${money(commitmentsForPlan(p.id))}</p>`:''}
   </div>
-  ${orderedItems.map(({item:i,settled})=>{
+  ${its.map(i=>{
     const bal=scheduleBalances(i);
     const all=p?planRelatedInstallments(i,p.id):itemSchedule(i).slice().sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
     const paymentsFromPlan=p?planPayments(p.id).filter(x=>x.itemId===i.id):[];
     const sumFromPlan=cents(paymentsFromPlan.reduce((sum,x)=>sum+Number(x.amount||0),0));
+    const settled=paidFor(i)>0&&cents(remaining(i))<=0;
     return `<div class="card${settled?' settled-card':''}" id="item-${esc(i.id)}">
       ${settled?`<details class="settled-details" ${expandedSettledItems.has(i.id)?'open':''} ontoggle="toggleSettledItem('${i.id}',this)">
         <summary class="settled-summary"><span class="settled-title">${esc(i.name)}</span>
