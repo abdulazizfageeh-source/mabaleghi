@@ -173,6 +173,26 @@ h3{font-size:16px}
 .paid-installment-body{padding:4px 12px 12px;border-top:1px solid #dce3e8;background:#f9fafb}
 .installments .paid-installment-body .installment-row{margin-top:0;padding-top:5px;border:0}
 .paid-installment-body .two{margin-top:3px}
+/* المصروفات: تجميع شهري مستقل عن البنود */
+.tabs button{font-size:clamp(10px,2.8vw,13px);padding:10px 2px;min-width:0}
+.quickAdd{width:55px;height:55px;padding:0;font-size:28px;display:grid;place-items:center;border-radius:50%}
+.expense-month{padding-top:10px}
+.expense-group{margin-top:10px;border:1px solid #e0e8ee;border-radius:13px;overflow:hidden}
+.expense-group>summary{display:flex;justify-content:space-between;gap:10px;align-items:center;cursor:pointer;padding:14px 12px;list-style:none;background:#f7f9fb}
+.expense-group>summary::-webkit-details-marker{display:none}
+.expense-group>summary>span{display:grid;gap:2px}
+.expense-group>summary>b{white-space:nowrap}
+.expense-caret{font-size:15px;color:#70869a}
+.expense-group[open] .expense-caret{display:inline-block;transform:rotate(180deg)}
+.expense-rows{padding:6px 12px}
+.expense-entry+.expense-entry{border-top:1px solid #e9eef2}
+.expense-entry .line{border:0}
+.expense-row-info{min-width:0;overflow-wrap:anywhere}
+.expense-entry .actions{margin:0 0 10px}
+.quick-menu{display:grid;gap:10px;margin-top:15px}
+.quick-option{text-align:right;background:#f2f7fa;color:#163b52;padding:16px;border:1px solid #d9e5ed;display:grid;gap:5px}
+.quick-option b{font-size:16px}
+.quick-option small{color:#6d8191;font-size:12px}
 </style>
 </head>
 <body>
@@ -182,6 +202,7 @@ h3{font-size:16px}
 <button id="tab-dashboard" onclick="go('dashboard')">الداشبورد</button>
 <button id="tab-plans" onclick="go('plans')">الخطط</button>
 <button id="tab-items" onclick="go('items')">البنود</button>
+<button id="tab-expenses" onclick="go('expenses')">المصروفات</button>
 <button id="tab-goals" onclick="go('goals')">الأهداف</button>
 </nav>
 <dialog id="modal"></dialog>
@@ -246,13 +267,14 @@ function localToday(){
   const d=new Date(), y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0');
   return `${y}-${m}-${day}`;
 }
-function emptyDb(){return {plans:[],items:[],payments:[]}}
+function emptyDb(){return {plans:[],items:[],payments:[],expenses:[]}}
 function load(){
   try{
     const x=JSON.parse(localStorage.getItem(KEY))||emptyDb();
     x.plans=Array.isArray(x.plans)?x.plans:[];
     x.items=Array.isArray(x.items)?x.items:[];
     x.payments=Array.isArray(x.payments)?x.payments:[];
+    x.expenses=Array.isArray(x.expenses)?x.expenses:[];
     x.plans.forEach(p=>{
       if(!p.date) p.date=(p.month||localToday().slice(0,7))+'-01';
       p.month=p.date.slice(0,7);
@@ -266,7 +288,7 @@ function load(){
     return x;
   }catch{return emptyDb()}
 }
-let db=load(),tab='dashboard',period='month',anchor=localToday().slice(0,7),active=null;
+let db=load(),tab='dashboard',period='month',anchor=localToday().slice(0,7),active=null,expenseMonth=localToday().slice(0,7);
 function save(){localStorage.setItem(KEY,JSON.stringify(db));render()}
 function id(){return (typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():'mab-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)}
 function money(n){return (Number(n)||0).toLocaleString('en-US',{maximumFractionDigits:2})+' ⃁'}
@@ -284,14 +306,16 @@ function addMonths(s,n){
 }
 function paidFor(item){return db.payments.filter(p=>p.itemId===item.id).reduce((s,p)=>s+Number(p.amount||0),0)}
 function totalPaid(p){return db.payments.filter(x=>x.planId===p.id).reduce((s,x)=>s+Number(x.amount||0),0)}
+function totalExpenses(p){return db.expenses.filter(x=>x.planId===p.id).reduce((s,x)=>s+Number(x.amount||0),0)}
 function outgoingCarry(planId,excludePlanId=''){
   return db.plans.filter(p=>p.id!==excludePlanId && p.carryFromPlanId===planId).reduce((s,p)=>s+Number(p.carry||0),0)
 }
 function planMoney(p){return Number(p.amount||0)+Number(p.carry||0)}
-function planBalance(p){return planMoney(p)-outgoingCarry(p.id)-totalPaid(p)}
+function planBalance(p){return cents(planMoney(p)-outgoingCarry(p.id)-totalPaid(p)-totalExpenses(p))}
 /* رصيد الخطة حتى تاريخ محدد: لا تُخصم حوالة أو دفعة مؤرخة بالمستقبل من النقد الحالي. */
 function planBalanceAt(p,asOf){
-  const spent=db.payments.filter(x=>x.planId===p.id&&x.date<=asOf).reduce((sum,x)=>sum+Number(x.amount||0),0);
+  const spent=db.payments.filter(x=>x.planId===p.id&&x.date<=asOf).reduce((sum,x)=>sum+Number(x.amount||0),0)
+    +db.expenses.filter(x=>x.planId===p.id&&x.date<=asOf).reduce((sum,x)=>sum+Number(x.amount||0),0);
   const transferred=db.plans.filter(x=>x.carryFromPlanId===p.id&&planDate(x)<=asOf).reduce((sum,x)=>sum+Number(x.carry||0),0);
   return cents(planMoney(p)-spent-transferred);
 }
@@ -569,7 +593,7 @@ function toggleInstallments(iid,node){
   else expandedInstallments.delete(iid);
   render();
 }
-function go(t){tab=t;active=null;render()}
+function go(t){tab=t;active=null;if(t==='expenses'&&expenseMonth===undefined)expenseMonth=localToday().slice(0,7);render()}
 function render(){
   planAvailabilityCache=new Map();
   const container=document.getElementById('view');
@@ -589,7 +613,7 @@ function render(){
     if(iid){if(node.open)expandedInstallments.add(iid);else expandedInstallments.delete(iid)}
   });
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b.id==='tab-'+tab));
-  container.innerHTML=tab==='dashboard'?dashboard():tab==='plans'?plans():tab==='goals'?goalsPage():items();
+  container.innerHTML=tab==='dashboard'?dashboard():tab==='plans'?plans():tab==='goals'?goalsPage():tab==='expenses'?expensesPage():items();
   decoratePlanSelectors(container);
 }
 
@@ -1014,6 +1038,7 @@ function plans(){
     const committed=commitmentsForPlan(p.id),current=planBalance(p);
     const linked=scheduledEntriesForPlan(p.id);
     const paid=planPayments(p.id);
+    const expensesFromPlan=db.expenses.filter(x=>x.planId===p.id).sort((a,b)=>b.date.localeCompare(a.date));
     const related=planRelatedItems(p.id);
     return `<div class="card">
       <div class="line"><div><b>${esc(planLabel(p))}</b><div class="muted">تاريخ توفر المبلغ: ${dateName(planDate(p))}</div></div>
@@ -1021,6 +1046,7 @@ function plans(){
       <div class="grid">
         <div class="stat"><span class="muted">المتاح قبل السداد</span><b>${money(planMoney(p)-outgoingCarry(p.id))}</b></div>
         <div class="stat"><span class="muted">المسدد من الخطة</span><b>${money(totalPaid(p))}</b></div>
+        <div class="stat"><span class="muted">المصروفات</span><b>${money(totalExpenses(p))}</b></div>
         <div class="stat"><span class="muted">مخصص لدفعات</span><b>${money(committed)}</b></div>
         <div class="stat"><span class="muted">غير مخصص</span><b class="${current-committed<-0.005?'neg':''}">${money(current-committed)}</b></div>
       </div>
@@ -1029,6 +1055,8 @@ function plans(){
       ${related.length?`<div class="note">${related.length} بند يخص هذه الخطة · ${paid.length} عملية سداد مسجلة · ${linked.length} دفعة مربوطة</div>`:''}
       ${paid.length?`<details class="installments"><summary>ما سُدد من هذه الخطة (${paid.length})</summary>
         ${paid.map(planPaymentRow).join('')}</details>`:''}
+      ${expensesFromPlan.length?`<details class="installments"><summary>مصروفات هذه الخطة (${expensesFromPlan.length})</summary>
+        ${expensesFromPlan.map(x=>`<div class="line"><div><b>${esc(x.category)}</b><div class="muted">${dateName(x.date)}${x.description?' · '+esc(x.description):''}</div></div><b>${money(x.amount)}</b></div>`).join('')}</details>`:''}
       ${linked.length?`<details class="installments"><summary>الدفعات المربوطة بالخطة (${linked.length})</summary>
         ${linked.map(x=>`<div class="line"><div><b>${esc(x.item.name)}</b><div class="muted">${instLabel(x.inst)} · ${installmentKindLabel(x.inst)}</div></div>
           <div style="text-align:left"><b>${x.remaining>0?money(x.remaining):'مسدد'}</b>${x.remaining>0?`<div>${button('سداد',`pay('${x.item.id}','${p.id}','${x.inst.id}')`,'small')}</div>`:''}</div></div>`).join('')}</details>`:''}
@@ -1039,19 +1067,22 @@ function plans(){
 }
 function items(){
   const p=active?db.plans.find(x=>x.id===active):null;
-  const its=p?planRelatedItems(p.id):[...db.items].reverse();
+  // Keep the existing order among open items and among settled items;
+  // only move fully paid items below all open items (also in plan-filtered views).
+  const orderedItems=(p?planRelatedItems(p.id):[...db.items].reverse())
+    .map(item=>({item,settled:paidFor(item)>0&&cents(remaining(item))<=0}));
+  orderedItems.sort((a,b)=>Number(a.settled)-Number(b.settled));
   return `<div class="card">
     <div class="line"><h2>${p?'بنود مرتبطة بخطة '+esc(planLabel(p)):'جميع البنود'}</h2>
       ${p?button('كل البنود',"go('items')"):''}</div>
     <p class="note">${p?'يعرض هذا القسم كل بند له دفعة مربوطة بالخطة أو عملية سداد خرجت منها، حتى لو لم تكن الدفعة مربوطة مسبقًا.':'أنشئ البنود مستقلّة عن الخطط. افتح «عرض الدفعات» لتحديد خطة مستقلة لكل دفعة، أو لتعديل نوعها.'}</p>
     ${p?`<p class="muted">الرصيد النقدي: ${money(planBalance(p))} · المخصص: ${money(commitmentsForPlan(p.id))}</p>`:''}
   </div>
-  ${its.map(i=>{
+  ${orderedItems.map(({item:i,settled})=>{
     const bal=scheduleBalances(i);
     const all=p?planRelatedInstallments(i,p.id):itemSchedule(i).slice().sort((a,b)=>instSortDate(a).localeCompare(instSortDate(b)));
     const paymentsFromPlan=p?planPayments(p.id).filter(x=>x.itemId===i.id):[];
     const sumFromPlan=cents(paymentsFromPlan.reduce((sum,x)=>sum+Number(x.amount||0),0));
-    const settled=paidFor(i)>0&&cents(remaining(i))<=0;
     return `<div class="card${settled?' settled-card':''}" id="item-${esc(i.id)}">
       ${settled?`<details class="settled-details" ${expandedSettledItems.has(i.id)?'open':''} ontoggle="toggleSettledItem('${i.id}',this)">
         <summary class="settled-summary"><span class="settled-title">${esc(i.name)}</span>
@@ -1098,7 +1129,113 @@ function items(){
       ${settled?'</div></details>':''}
     </div>`;
   }).join('')||'<div class="card">لا توجد بنود مرتبطة بهذا العرض.</div>'}
-  <div class="item-list-pad"></div><button type="button" class="quickAdd" onclick="editItem()">＋ إضافة بند</button>`;
+  <div class="item-list-pad"></div><button type="button" class="quickAdd" aria-label="إضافة" title="إضافة" onclick="quickAddMenu()">＋</button>`;
+}
+/* المصروفات اليومية مستقلة تمامًا عن الديون والدفعات المجدولة. */
+const EXPENSE_CATEGORIES=['متفرقات','ش','وقود','مطاعم','مشتريات','اشتراكات','مصروف البيت'];
+function expensesPage(){
+  const records=db.expenses.filter(x=>!expenseMonth||ym(x.date)===expenseMonth)
+    .slice().sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
+  const total=cents(records.reduce((s,x)=>s+Number(x.amount||0),0));
+  const months=[...new Set(records.map(x=>ym(x.date)))].sort((a,b)=>b.localeCompare(a));
+  return `<div class="card">
+    <div class="line"><h2>المصروفات</h2></div>
+    <div class="muted">تُجمع العمليات حسب الشهر والتصنيف دون إنشاء بند أو قسط جديد.</div>
+    <div class="two"><div><label>الشهر</label><input type="month" value="${expenseMonth||localToday().slice(0,7)}" onchange="expenseMonth=this.value;render()"></div>
+      <div><label>العرض</label><select onchange="expenseMonth=this.value==='all'?'':(document.querySelector('#view input[type=month]')?.value||localToday().slice(0,7));render()">
+        <option value="month" ${expenseMonth?'selected':''}>شهر محدد</option><option value="all" ${!expenseMonth?'selected':''}>كل الشهور</option>
+      </select></div></div>
+    <div class="grid" style="margin-top:12px"><div class="stat"><span class="muted">إجمالي المصروفات</span><b>${money(total)}</b></div>
+      <div class="stat"><span class="muted">عدد العمليات</span><b>${records.length}</b></div></div>
+  </div>
+  ${months.map(month=>{
+    const monthly=records.filter(x=>ym(x.date)===month);
+    const categories=[...new Set(monthly.map(x=>x.category))];
+    const monthlyTotal=cents(monthly.reduce((s,x)=>s+Number(x.amount||0),0));
+    return `<section class="card expense-month"><div class="line"><h2>${monthName(month)}</h2><b>${money(monthlyTotal)}</b></div>
+      ${categories.map(category=>{
+        const rows=monthly.filter(x=>x.category===category);
+        const amount=cents(rows.reduce((s,x)=>s+Number(x.amount||0),0));
+        return `<details class="expense-group"><summary><span><b>${esc(category)}</b><small class="muted">${rows.length} ${rows.length===1?'عملية':'عمليات'}</small></span>
+            <b>${money(amount)} <span aria-hidden="true" class="expense-caret">⌄</span></b></summary>
+          <div class="expense-rows">${rows.map(x=>`<div class="expense-entry">
+            <div class="line"><div class="expense-row-info"><b>${x.description?esc(x.description):'مصروف'}</b>
+              <div class="muted">${dateName(x.date)} · ${esc(fundingLabel(x.planId))}</div></div><b>${money(x.amount)}</b></div>
+            <div class="actions">${button('تعديل',`editExpense('${x.id}')`,'small secondary')}${button('حذف',`deleteExpense('${x.id}')`,'small danger')}</div>
+          </div>`).join('')}</div></details>`;
+      }).join('')}
+    </section>`;
+  }).join('')||'<div class="card"><p class="muted">لا توجد مصروفات مسجلة في الفترة المختارة.</p></div>'}
+  <div class="item-list-pad"></div><button type="button" class="quickAdd" aria-label="إضافة" title="إضافة" onclick="quickAddMenu()">＋</button>`;
+}
+function quickAddMenu(){
+  show(`<h2>إضافة</h2><div class="quick-menu">
+    <button type="button" class="quick-option" onclick="dismissModal();editItem()"><b>إضافة بند جديد</b><small>دين أو تمويل أو التزام له سداد</small></button>
+    <button type="button" class="quick-option" onclick="dismissModal();editExpense()"><b>تسجيل مصروف</b><small>صرف يومي أو عملية واحدة دون إنشاء بند</small></button>
+  </div>`);
+}
+function expenseCategoryChanged(){
+  const select=document.getElementById('expenseCategory'),extra=document.getElementById('expenseCustom');
+  if(!select||!extra)return;
+  extra.hidden=select.value!=='__other__';
+  extra.required=select.value==='__other__';
+}
+function editExpense(eid=''){
+  const e=db.expenses.find(x=>x.id===eid);
+  const date=e?.date||localToday();
+  const categories=[...new Set([...EXPENSE_CATEGORIES,...db.expenses.map(x=>x.category)])];
+  const category=e?.category||'متفرقات';
+  const other=!categories.includes(category);
+  show(`<h2>${e?'تعديل مصروف':'تسجيل مصروف'}</h2>
+    <form id="f" onsubmit="event.preventDefault();submitExpense('${eid}')">
+      <label>المبلغ بالريال</label><input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${e?.amount??''}" placeholder="0.00">
+      <label>تاريخ الصرف</label><input name="date" type="date" required max="${localToday()}" value="${date}">
+      <label>التصنيف</label><select id="expenseCategory" name="category" onchange="expenseCategoryChanged()">
+        ${categories.map(x=>`<option value="${esc(x)}" ${category===x?'selected':''}>${esc(x)}</option>`).join('')}
+        <option value="__other__" ${other?'selected':''}>تصنيف جديد...</option>
+      </select>
+      <input id="expenseCustom" name="customCategory" maxlength="80" placeholder="اسم التصنيف الجديد" value="${other?esc(category):''}" ${other?'':'hidden'}>
+      <label>وصف العملية (اختياري)</label><input name="description" maxlength="200" value="${esc(e?.description||'')}" placeholder="مثلاً: LikeCard أو بنزين">
+      <label>من أي خطة خرج المبلغ؟</label>
+      <select class="plan-select-native" name="fundingPlanId" required>
+        <option value="">اختر خطة التمويل</option>
+        ${[...db.plans].sort((a,b)=>planDate(b).localeCompare(planDate(a))).map(p=>`<option value="${esc(p.id)}" ${e?.planId===p.id?'selected':''}>${esc(planLabel(p))}</option>`).join('')}
+      </select>
+      <p class="note">يُخصم المبلغ من رصيد الخطة مرة واحدة، ولا يُضاف إلى الديون أو الأقساط.</p>
+      <div class="actions"><button type="submit">${e?'حفظ التعديل':'حفظ المصروف'}</button>${button('إلغاء','dismissModal(event)')}</div>
+    </form>`);
+}
+function submitExpense(eid=''){
+  const form=document.getElementById('f');if(!form)return;
+  const v=Object.fromEntries(new FormData(form));
+  const plan=db.plans.find(p=>p.id===v.fundingPlanId);
+  const old=db.expenses.find(x=>x.id===eid);
+  const amount=Number(v.amount);
+  const category=(v.category==='__other__'?v.customCategory:v.category||'').trim();
+  const description=String(v.description||'').trim();
+  if(!Number.isFinite(amount)||amount<=0||amount>1e11||Math.abs(amount-cents(amount))>0.0000001)return alert('أدخل مبلغًا صحيحًا بمنزلتين عشريتين كحد أقصى');
+  if(!validDate(v.date)||v.date>localToday())return alert('أدخل تاريخ صرف صحيحًا لا يتجاوز اليوم');
+  if(!category||category.length>80||category==='__other__')return alert('اختر تصنيفًا صحيحًا');
+  if(description.length>200)return alert('الوصف طويل جدًا');
+  if(!plan)return alert('اختر خطة التمويل التي خرج منها المبلغ');
+  if(planDate(plan)>v.date)return alert('لا يمكن تسجيل مصروف قبل تاريخ توفر مبلغ الخطة');
+  const available=cents(planBalance(plan)+(old&&old.planId===plan.id?Number(old.amount):0));
+  if(amount>available+0.005)return alert('المبلغ يتجاوز الرصيد المتبقي في الخطة المختارة');
+  const next={id:eid||id(),planId:plan.id,date:v.date,category,description,amount:cents(amount)};
+  const pos=old?db.expenses.findIndex(x=>x.id===eid):-1;
+  const reserved=cents(commitmentsForPlan(plan.id));
+  const warning=available-amount<reserved-0.005?'\nتنبيه: سيبقى في الخطة رصيد أقل من المبالغ المخصصة لأقساط مستقبلية.':'';
+  if(!confirm(`تأكيد ${old?'تعديل':'تسجيل'} المصروف؟\nالتصنيف: ${category}\nالمبلغ: ${money(amount)}\nالخطة: ${planLabel(plan)}\nالرصيد بعد العملية: ${money(available-amount)}${warning}`))return;
+  if(pos>=0)db.expenses[pos]=next;else db.expenses.push(next);
+  expenseMonth=ym(next.date);
+  dismissModal();save();
+}
+function deleteExpense(eid){
+  const expense=db.expenses.find(x=>x.id===eid);
+  if(!expense)return;
+  if(!confirm(`حذف مصروف ${expense.category} بمبلغ ${money(expense.amount)}؟ سيُعاد المبلغ إلى رصيد خطة «${fundingLabel(expense.planId)}».`))return;
+  db.expenses=db.expenses.filter(x=>x.id!==eid);
+  save();
 }
 function linkInstallment(iid,instId,planId){
   const item=db.items.find(i=>i.id===iid),inst=item&&itemSchedule(item).find(d=>d.id===instId);
@@ -1178,12 +1315,12 @@ function submitPlan(pid){
   let p=db.plans.find(x=>x.id===pid);
   const previousPlan=p?{...p}:null;
   if(p){
-    const firstPayment=[...db.payments].filter(x=>x.planId===pid).sort((a,b)=>a.date.localeCompare(b.date))[0];
+    const firstPayment=[...db.payments,...db.expenses].filter(x=>x.planId===pid).sort((a,b)=>a.date.localeCompare(b.date))[0];
     if(firstPayment&&v.date>firstPayment.date)return alert('لا يمكن تأخير تاريخ توفر مبلغ الخطة إلى ما بعد سداد مسجل منها');
     const dependents=db.plans.filter(x=>x.carryFromPlanId===pid && Number(x.carry||0)>0);
     if(dependents.some(x=>v.date>=planDate(x)))return alert('هذه الخطة مصدر ترحيل لخطة أحدث؛ لا يمكن جعل تاريخها مساويًا لها أو أحدث منها');
     const outgoing=dependents.reduce((sum,x)=>sum+Number(x.carry||0),0);
-    if(amount+carry-outgoing-totalPaid(p)<-0.001)return alert('المبلغ الجديد أقل من مبالغ تم سدادها أو ترحيلها بالفعل من هذه الخطة');
+    if(amount+carry-outgoing-totalPaid(p)-totalExpenses(p)<-0.001)return alert('المبلغ الجديد أقل من مبالغ تم سدادها أو صرفها أو ترحيلها بالفعل من هذه الخطة');
   }
   if(!p){p={id:id()};db.plans.push(p)}
   Object.assign(p,{
@@ -1444,7 +1581,7 @@ function deleteItem(iid){
 }
 function deletePlan(pid){
   if(db.plans.some(p=>p.carryFromPlanId===pid&&Number(p.carry||0)>0))return alert('لا يمكن حذف خطة تم الترحيل منها');
-  if(db.payments.some(p=>p.planId===pid))return alert('لا يمكن حذف خطة سُجلت منها مدفوعات، احذف سجلات السداد أولًا');
+  if(db.payments.some(p=>p.planId===pid)||db.expenses.some(e=>e.planId===pid))return alert('لا يمكن حذف خطة لها مدفوعات أو مصروفات مسجلة. احذف السجلات المرتبطة أولًا');
   const linked=db.items.some(item=>itemSchedule(item).some(d=>linkedPlanId(item,d)===pid));
   if(linked)return alert('هذه الخطة مرتبطة بدفعات. فك ارتباطها من «البنود ← عرض الدفعات» قبل الحذف.');
   if(confirm('حذف هذه الخطة فقط؟ ستبقى البنود والدفعات محفوظة.')){
@@ -1454,10 +1591,10 @@ function deletePlan(pid){
   }
 }
 function resetApp(){
-  if(!confirm('سيتم مسح جميع بيانات مبالغي نهائيًا: الخطط والبنود وسجلات السداد. هل تريد المتابعة؟'))return;
+  if(!confirm('سيتم مسح جميع بيانات مبالغي نهائيًا: الخطط والبنود وسجلات السداد والمصروفات. هل تريد المتابعة؟'))return;
   if(!confirm('تأكيد أخير: لا يمكن التراجع بعد مسح البيانات.'))return;
   localStorage.removeItem(KEY);
-  db={plans:[],items:[],payments:[]};
+  db=emptyDb();
   localStorage.removeItem(GOALS_KEY);goals=[];
   localStorage.removeItem(STABILITY_KEY);stabilitySettings={target:0,peak:0};
   active=null;
@@ -1473,7 +1610,7 @@ function resetApp(){
 let pendingImport=null;
 const MAX_IMPORT_BYTES=3*1024*1024;
 function exportData(){
-  const payload={format:'mabaleghi-data',schemaVersion:2,exportedAt:new Date().toISOString(),data:db,goals,stabilitySettings};
+  const payload={format:'mabaleghi-data',schemaVersion:3,exportedAt:new Date().toISOString(),data:db,goals,stabilitySettings};
   const fileName='mabaleghi-backup-'+localToday()+'.json';
   const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json;charset=utf-8'}));
   const link=document.createElement('a');
@@ -1507,10 +1644,10 @@ function textField(s,name,max=500){
 function normalizeDataFile(src){
   if(!src||typeof src!=='object'||Array.isArray(src))importErr('ملف البيانات غير صالح');
   if(src.format&&src.format!=='mabaleghi-data')importErr('هذا ليس ملف بيانات مبالغي');
-  if(src.schemaVersion&&Number(src.schemaVersion)>2)importErr('هذا الملف من إصدار أحدث وغير مدعوم');
+  if(src.schemaVersion&&Number(src.schemaVersion)>3)importErr('هذا الملف من إصدار أحدث وغير مدعوم');
   const raw=src.data||src;
-  if(!raw||!Array.isArray(raw.plans)||!Array.isArray(raw.items)||!Array.isArray(raw.payments))importErr('يلزم وجود الخطط والبنود والمدفوعات الثلاثة');
-  if(raw.plans.length>1500||raw.items.length>10000||raw.payments.length>20000)importErr('ملف البيانات كبير أكثر من الحد المدعوم');
+  if(!raw||!Array.isArray(raw.plans)||!Array.isArray(raw.items)||!Array.isArray(raw.payments)||raw.expenses!=null&&!Array.isArray(raw.expenses))importErr('يلزم وجود بيانات صحيحة للخطط والبنود والمدفوعات والمصروفات');
+  if(raw.plans.length>1500||raw.items.length>10000||raw.payments.length>20000||(raw.expenses||[]).length>30000)importErr('ملف البيانات كبير أكثر من الحد المدعوم');
   const model={plans:raw.plans.map((p,i)=>{
     if(!p||typeof p!=='object')importErr('بيانات خطة غير صحيحة');
     const date=p.date||((p.month||'')+'-01');
@@ -1549,12 +1686,18 @@ function normalizeDataFile(src){
     if(!p||!validDate(p.date))importErr('تاريخ سداد غير صالح: '+(i+1));
     return {id:fieldId(p.id,'السداد'),planId:fieldId(p.planId,'خطة السداد'),itemId:fieldId(p.itemId,'بند السداد'),
       installmentId:p.installmentId?fieldId(p.installmentId,'رقم الدفعة'):'',date:p.date,amount:moneyField(p.amount,'السداد '+(i+1),false)};
+  }),expenses:(raw.expenses||[]).map((e,i)=>{
+    if(!e||!validDate(e.date))importErr('تاريخ مصروف غير صالح: '+(i+1));
+    const category=textField(e.category,'تصنيف المصروف',80).trim();
+    if(!category||category==='__other__')importErr('تصنيف مصروف غير صالح: '+(i+1));
+    return {id:fieldId(e.id,'معرف المصروف'),planId:fieldId(e.planId,'خطة المصروف'),date:e.date,
+      category,description:textField(e.description,'وصف المصروف',200),amount:moneyField(e.amount,'المصروف '+(i+1),false)};
   })};
   validateImportedData(model);
   return model;
 }
 function validateImportedData(model){
-  const planIds=new Set(),itemIds=new Set(),installmentIds=new Set(),paymentIds=new Set();
+  const planIds=new Set(),itemIds=new Set(),installmentIds=new Set(),paymentIds=new Set(),expenseIds=new Set();
   const plans=new Map(),items=new Map(),installments=new Map();
   for(const p of model.plans){
     if(planIds.has(p.id))importErr('يوجد تكرار في معرفات الخطط');
@@ -1608,6 +1751,14 @@ function validateImportedData(model){
     itemPaid.set(p.itemId,(itemPaid.get(p.itemId)||0)+p.amount);
     if(p.installmentId)instPaid.set(p.installmentId,(instPaid.get(p.installmentId)||0)+p.amount);
   }
+  for(const e of model.expenses||[]){
+    if(expenseIds.has(e.id))importErr('تكرار رقم مصروف');
+    expenseIds.add(e.id);
+    const source=plans.get(e.planId);
+    if(!source)importErr('مصروف مرتبط بخطة غير موجودة');
+    if(source.date>e.date)importErr('تاريخ مصروف يسبق تاريخ توفر مبلغ الخطة');
+    spent.set(e.planId,(spent.get(e.planId)||0)+e.amount);
+  }
   for(const [i,amount] of itemPaid){if(amount>items.get(i).amount+0.005)importErr('سداد يتجاوز قيمة البند: '+items.get(i).name)}
   for(const [i,amount] of instPaid){
     const saved=installments.get(i);
@@ -1629,14 +1780,15 @@ async function readImportFile(input){
     const importedSettings=payload.stabilitySettings?validateStabilitySettings(payload.stabilitySettings):null;
     pendingImport={model:imported,goals:importedGoals,settings:importedSettings,meta:payload.meta||{},name:file.name};
     const m=pendingImport.meta, caution=m.illustrative?'هذه خطة مقترحة بأرقام افتراضية أو غير مؤكدة. لا تعتبر أي مبلغ مستلمًا أو أي بند مسددًا حتى تسجله بنفسك.':'';
-    const info=`${imported.plans.length} خطة، ${imported.items.length} بند، ${imported.payments.length} سداد مسجل${importedGoals?'، '+importedGoals.length+' هدف':''}`;
+    const info=`${imported.plans.length} خطة، ${imported.items.length} بند، ${imported.payments.length} سداد، ${imported.expenses.length} مصروف${importedGoals?'، '+importedGoals.length+' هدف':''}`;
     show(`<h2>معاينة الاستيراد</h2>
       <p><b>${esc(textField(m.title||file.name,'عنوان الملف',200))}</b></p>
       <p class="note">${esc(info)}</p>
       ${caution?`<p class="note neg">${esc(caution)}</p>`:''}
       <p class="note"><b>تحديث البنود:</b> يضيف أي خطة أو بند غير موجود ويحدّث البنود المستوردة المطابقة، بما فيها مبالغ ومواعيد دفعاتها، مع إبقاء سجلات السداد والخطط الموجودة كما هي. راجع التغييرات إذا كنت عدّلت البنود يدويًا.</p>
       <p class="note"><b>دمج فقط:</b> يضيف العناصر الجديدة دون تعديل البنود الموجودة.</p>
-      <p class="note"><b>استبدال:</b> يمسح بيانات مبالغي الحالية ويضع بيانات الملف مكانها. يُفضّل تصدير نسخة احتياطية أولًا.</p>
+      <p class="note"><b>استبدال:</b> يمسح بيانات مبالغي الحالية، بما فيها المصروفات، ويضع بيانات الملف مكانها. يُفضّل تصدير نسخة احتياطية أولًا.</p>
+      ${db.expenses.length&&!imported.expenses.length?'<p class="note neg">تنبيه: لا يتضمن هذا الملف مصروفات، والاستبدال سيزيل المصروفات الحالية. استخدم الدمج أو التحديث للحفاظ عليها.</p>':''}
       <div class="actions">
         ${button('تحديث البنود ودمج الجديد','applyImport(\'update\')','')}
         ${button('إضافة غير الموجودة فقط','applyImport(\'merge\')')}
@@ -1654,12 +1806,12 @@ function applyImport(mode){
   let result,added={plans:0,items:0,payments:0},updatedItems=0;
   if(mode==='replace'){
     if(!confirm('سيتم حذف كل بيانات مبالغي الحالية واستبدالها ببيانات الملف. هل أنت متأكد؟'))return;
-    if(!confirm('تأكيد أخير: هل تريد استبدال كل الخطط والبنود وسجلات السداد؟'))return;
+    if(!confirm('تأكيد أخير: هل تريد استبدال كل الخطط والبنود وسجلات السداد والمصروفات؟'))return;
     result=source;
   }else{
     if(mode==='update'&&!confirm('سيتم تحديث مبالغ وجداول البنود المتطابقة مع ملف الاستيراد، مع الإبقاء على خططك وسجلات السداد. هل تريد المتابعة؟'))return;
-    result={plans:[...db.plans],items:[...db.items],payments:[...db.payments]};
-    for(const key of ['plans','items','payments']){
+    result={plans:[...db.plans],items:[...db.items],payments:[...db.payments],expenses:[...db.expenses]};
+    for(const key of ['plans','items','payments','expenses']){
       const oldIds=new Set(result[key].map(x=>x.id));
       for(const rec of source[key]){
         if(!oldIds.has(rec.id)){
@@ -1694,7 +1846,7 @@ function applyImport(mode){
   pendingImport=null;active=null;tab='dashboard';
   dismissModal();render();
   if(mode==='replace')alert('تم استبدال بيانات مبالغي بالملف المستورد بنجاح.');
-  else alert(`تم الاستيراد: ${added.plans} خطة جديدة، و${added.items} بند جديد، و${updatedItems} بند محدّث، و${added.payments} سداد جديد.`);
+  else alert(`تم الاستيراد: ${added.plans} خطة جديدة، و${added.items} بند جديد، و${updatedItems} بند محدّث، و${added.payments} سداد جديد، و${added.expenses} مصروف جديد.`);
 }
 
 if('serviceWorker'in navigator){
