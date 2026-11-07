@@ -195,6 +195,9 @@ h3{font-size:16px}
 .quick-option{text-align:right;background:#f2f7fa;color:#163b52;padding:16px;border:1px solid #d9e5ed;display:grid;gap:5px}
 .quick-option b{font-size:16px}
 .quick-option small{color:#6d8191;font-size:12px}
+.card-min-summary{background:#f1f6fb;border:1px solid #d7e5f2;border-radius:12px;padding:12px;margin:12px 0}
+.card-min-summary .line{margin:0 0 7px}
+.card-min-summary .note{margin:8px 0}
 </style>
 </head>
 <body>
@@ -286,6 +289,17 @@ function load(){
     x.items.forEach(i=>{
       i.amount=Number(i.amount||0);
       i.schedule=Array.isArray(i.schedule)?i.schedule:[];
+      // تحديث مستحق نوفمبر المعروف للبطاقتين من المستخدم؛ لا يستبدل أي مبلغ أحدث سجّله المستخدم.
+      const knownNovember={
+        'cffc3c88-7162-41d9-a441-9727d5a59583':{first:9922.14,actual:11314.43},
+        '4ce515bc-4dfa-4dfd-b414-59cc5a1d982c':{first:6527.35,actual:7435.92}
+      };
+      const known=knownNovember[i.id];
+      if(i.type==='card'&&known&&i.schedule[0]?.month==='2026-10'&&
+        Math.abs(Number(i.schedule[0]?.amount)-known.first)<0.005 &&
+        !(i.cardStatementMinimums&&Object.prototype.hasOwnProperty.call(i.cardStatementMinimums,'2026-11'))){
+        i.cardStatementMinimums={...(i.cardStatementMinimums||{}),'2026-11':known.actual};
+      }
     });
     return x;
   }catch{return emptyDb()}
@@ -342,55 +356,121 @@ function cents(v){return Math.round((Number(v)||0)*100)/100}
 function cardInstallmentId(item,month){return `card_${item.id}_${month.replace('-','')}`}
 function monthEndDay(month){const [year,m]=month.split('-').map(Number);return new Date(year,m,0).getDate()}
 /*
-  For cards the first minimum is a fixed statement amount. Later minimums are
-  5% of projected outstanding balances. A projection assumes each scheduled
-  minimum is paid, unless a larger actual payment has been recorded that month.
-  It does not include new purchases, bank fees or interest. Actual payment
-  status is never guessed: it comes only from db.payments.
+  Minimum-payment rollover (estimate, not a bank statement):
+  - The first month uses the recorded statement minimum.
+  - From day 5 of each following month, any unpaid prior minimum carries over.
+  - Only the NEW minimum increment is a scheduled installment, preventing double counting.
+  - The increment is 5% of the unallocated revolving balance, not 5% of the full debt.
+  - A user-entered current statement minimum overrides the estimated total.
+  - No payment is ever assumed; only actual payment records reduce debt and past dues.
 */
+function cardDueDay(item){
+  const d=Number(item?.schedule?.[0]?.date?.slice(-2)||5);
+  return Number.isInteger(d)&&d>=1&&d<=31?d:5;
+}
+function cardStatementDate(item,month){
+  return `${month}-${String(Math.min(cardDueDay(item),monthEndDay(month))).padStart(2,'0')}`;
+}
+function cardCycleMonth(item,asOf=localToday()){
+  const current=ym(asOf),dueDate=cardStatementDate(item,current);
+  return asOf>=dueDate?current:addMonths(current,-1);
+}
 function itemSchedule(item,asOf=''){
   if(!isCard(item))return item.schedule||[];
   const first=(item.schedule||[])[0];
   if(!first||!first.month)return [];
-  let balance=cents(item.amount),start=first.month;
-  const byPaidMonth={};
-  for(const p of db.payments.filter(p=>p.itemId===item.id&&(!asOf||p.date<=asOf))){
-    const month=ym(p.date);
-    byPaidMonth[month]=cents((byPaidMonth[month]||0)+Number(p.amount||0));
-  }
-  const months=[];
-  const dueDay=first.date?Number(first.date.slice(-2)):0;
+  const allPayments=db.payments.filter(p=>p.itemId===item.id&&(!asOf||p.date<=asOf));
   const rate=Number(item.cardRate??5);
-  for(let k=0;k<60&&balance>=0.01;k++){
-    const month=addMonths(start,k);
-    const due=k===0?cents(Math.min(balance,first.amount)):cents(Math.min(balance,balance*rate/100));
-    if(due<0.01)break;
-    const date=dueDay?`${month}-${String(Math.min(dueDay,monthEndDay(month))).padStart(2,'0')}`:'';
-    months.push(k===0?{...first,amount:due,date}:{id:cardInstallmentId(item,month),month,date,label:'الحد الأدنى المتوقع — 5% من الرصيد المتبقي',kind:item.installmentKinds?.[cardInstallmentId(item,month)]||'regular',fundingPlanId:item.installmentFunding?.[cardInstallmentId(item,month)]||'',amount:due});
-    const actuallyPaid=byPaidMonth[month]||0;
-    balance=cents(Math.max(0,balance-Math.max(due,actuallyPaid)));
+  const rows=[];
+  let scheduledTotal=0;
+  for(let k=0;k<60;k++){
+    const month=addMonths(first.month,k),date=cardStatementDate(item,month);
+    const paidBefore=cents(allPayments.filter(p=>p.date<date).reduce((sum,p)=>sum+Number(p.amount||0),0));
+    const balance=cents(Math.max(0,Number(item.amount)-paidBefore));
+    if(balance<0.01)break;
+    const priorOpen=cents(Math.max(0,scheduledTotal-paidBefore));
+    const unallocated=cents(Math.max(0,balance-priorOpen));
+    const bankTotal=item.cardStatementMinimums?.[month];
+    const estimatedIncrement=cents(Math.min(unallocated,unallocated*rate/100));
+    const increment=k===0?cents(Math.min(balance,first.amount)):
+      bankTotal!==undefined?cents(Math.max(0,Math.min(balance,Number(bankTotal))-priorOpen)):estimatedIncrement;
+    if(increment<0.01)break;
+    rows.push(k===0?{...first,date,amount:increment}: {
+      id:cardInstallmentId(item,month),month,date,
+      label:bankTotal!==undefined?'زيادة الحد الأدنى — حسب كشف البنك':'زيادة الحد الأدنى المقدّرة — 5%',
+      kind:item.installmentKinds?.[cardInstallmentId(item,month)]||'regular',
+      fundingPlanId:item.installmentFunding?.[cardInstallmentId(item,month)]||'',amount:increment
+    });
+    scheduledTotal=cents(scheduledTotal+increment);
   }
-  return months;
+  return rows;
 }
 function cardScheduleBalances(item,asOf=''){
   const rows=itemSchedule(item,asOf);
   if(remainingAt(item,asOf)<0.005){
     return Object.fromEntries(rows.map(d=>[d.id,{paid:d.amount,remaining:0}]));
   }
-  const actualForRow={};
-  const validIds=new Set(rows.map(d=>d.id));
+  const validIds=new Set(rows.map(d=>d.id)),explicit={};
+  let general=0;
   for(const p of db.payments.filter(p=>p.itemId===item.id&&(!asOf||p.date<=asOf))){
-    const rowId=p.installmentId && validIds.has(p.installmentId)
-      ? p.installmentId
-      : (ym(p.date)===rows[0]?.month?rows[0]?.id:cardInstallmentId(item,ym(p.date)));
-    if(rowId)actualForRow[rowId]=cents((actualForRow[rowId]||0)+Number(p.amount||0));
+    if(p.installmentId&&validIds.has(p.installmentId))explicit[p.installmentId]=cents((explicit[p.installmentId]||0)+Number(p.amount||0));
+    else general=cents(general+Number(p.amount||0));
   }
   const result={};
   for(const d of rows){
-    const paid=Math.min(d.amount,actualForRow[d.id]||0);
+    const linked=Math.min(d.amount,explicit[d.id]||0);
+    const extra=Math.min(general,Math.max(0,d.amount-linked));
+    general=cents(Math.max(0,general-extra));
+    const paid=cents(linked+extra);
     result[d.id]={paid,remaining:cents(Math.max(0,d.amount-paid))};
   }
   return result;
+}
+function cardMinimumSnapshot(item,asOf=localToday()){
+  const month=cardCycleMonth(item,asOf);
+  const first=item.schedule?.[0];
+  if(!first||month<first.month)return null;
+  const rows=itemSchedule(item,asOf),balances=cardScheduleBalances(item,asOf);
+  const prior=cents(rows.filter(d=>d.month<month).reduce((sum,d)=>sum+Number(balances[d.id]?.remaining||0),0));
+  const newPart=cents(rows.filter(d=>d.month===month).reduce((sum,d)=>sum+Number(balances[d.id]?.remaining||0),0));
+  return {month,prior,newPart,total:cents(prior+newPart),confirmed:item.cardStatementMinimums?.[month]!==undefined};
+}
+function cardMinimumSummary(item){
+  const s=cardMinimumSnapshot(item);
+  if(!s)return '';
+  return `<div class="card-min-summary">
+    <div class="line"><b>الحد الأدنى الحالي (${monthName(s.month)})</b><b>${money(s.total)}</b></div>
+    <div class="muted">متأخر من الأشهر السابقة: ${money(s.prior)} · استحقاق الشهر: ${money(s.newPart)}</div>
+    <p class="note">${s.confirmed?'وفق مبلغ الكشف المدخل يدويًا':'تقدير تلقائي غير مؤكد من البنك'} · الترحيل يوم ${cardDueDay(item)} من كل شهر، ولا يُحتسب السداد إلا عند تسجيله.</p>
+    <div class="actions">${button('تحديث الحد الأدنى من كشف البنك',`editCardStatement('${item.id}')`,'small secondary')}</div>
+  </div>`;
+}
+function editCardStatement(iid){
+  const item=db.items.find(x=>x.id===iid);
+  if(!item||!isCard(item))return;
+  const month=cardCycleMonth(item),snap=cardMinimumSnapshot(item);
+  show(`<h2>تحديث الحد الأدنى الفعلي</h2>
+    <p class="note">${esc(item.name)} · أدخل إجمالي الحد الأدنى الذي يظهر في كشف البنك. يفصل التطبيق المتأخرات عن الزيادة الجديدة دون تكرار.</p>
+    <form id="f" onsubmit="event.preventDefault();saveCardStatement('${iid}')">
+      <label>شهر الكشف</label><input name="month" type="month" required min="${item.schedule[0].month}" value="${month}">
+      <label>الحد الأدنى المستحق بالكامل (ريال)</label>
+      <input name="minimum" type="number" step="0.01" inputmode="decimal" min="0.01" required value="${item.cardStatementMinimums?.[month]??snap?.total??''}">
+      <p class="note">إذا لم تُدخل مبلغ كشف لشهر لاحق، سيحسب التطبيق تقديرًا بنسبة 5% من الرصيد غير المشمول بالحد الأدنى المتراكم.</p>
+      <div class="actions"><button type="submit">حفظ مبلغ الكشف</button>${button('إلغاء','dismissModal(event)')}</div>
+    </form>`);
+}
+function saveCardStatement(iid){
+  const item=db.items.find(x=>x.id===iid),f=document.getElementById('f');
+  if(!item||!f)return;
+  const month=f.elements.month.value,amount=Number(f.elements.minimum.value);
+  if(!validMonth(month)||month<item.schedule[0].month||!Number.isFinite(amount)||amount<=0)return alert('تحقق من الشهر والمبلغ');
+  if(amount>remaining(item)+0.005)return alert('المستحق المدخل أكبر من مديونية البطاقة المسجلة. حدّث رصيد البطاقة أولًا.');
+  const snapshot=cardMinimumSnapshot(item,cardStatementDate(item,month));
+  if(snapshot&&amount+0.005<snapshot.prior)return alert('المبلغ المدخل أقل من المتأخرات المسجلة. راجع السداد أو صحح المبالغ السابقة أولًا.');
+  const old=item.cardStatementMinimums||{};
+  item.cardStatementMinimums={...old,[month]:cents(amount)};
+  if(fundingOverdrawn()){item.cardStatementMinimums=old;return alert('التعديل يتجاوز المبلغ المتاح في خطة مرتبطة. ألغِ ربط الدفعة أو عدّل الخطة أولًا.');}
+  dismissModal();save();
 }
 function installmentKind(d){
   if(d?.kind==='arrears')return 'arrears';
@@ -1090,9 +1170,10 @@ function items(){
         <summary class="settled-summary"><span class="settled-title">${esc(i.name)}</span>
           <span class="settled-end"><span class="settled-check" aria-hidden="true">✓</span>مسدد بالكامل<span class="settled-caret" aria-hidden="true">⌄</span></span></summary>
         <div class="settled-body">`:
-        `<div class="line"><div><b>${esc(i.name)}</b><div class="muted">${isCard(i)?'بطاقة ائتمانية · حد أدنى ثم 5%':'التزام عادي'}</div></div>
+        `<div class="line"><div><b>${esc(i.name)}</b><div class="muted">${isCard(i)?'بطاقة ائتمانية · ترحيل الحد الأدنى في يوم الاستحقاق':'التزام عادي'}</div></div>
         <span class="tag">${paidFor(i)>0?'جزئي':'غير مسدد'}</span></div>`}
       ${i.note?`<p class="note">${esc(i.note)}</p>`:''}
+      ${isCard(i)?cardMinimumSummary(i):''}
       ${p?`<p class="note">مسدد من هذه الخطة: <b>${money(sumFromPlan)}</b> · دفعات مربوطة: ${itemSchedule(i).filter(d=>linkedPlanId(i,d)===p.id).length}</p>`:''}
       <div class="grid"><div class="stat"><span class="muted">قيمة البند</span><b>${money(i.amount)}</b></div>
         <div class="stat"><span class="muted">المتبقي</span><b>${money(remaining(i))}</b></div></div>
@@ -1123,7 +1204,7 @@ function items(){
               <div class="paid-installment-body">${body}${paymentDetails}<div class="actions">${button('سجل السداد',`history('${i.id}')`,'small secondary')}</div></div>
             </details>`;
         }).join('')||'<p class="note">لا توجد دفعات. اضغط تعديل لإضافتها.</p>':''}
-        ${isCard(i)?'<p class="note">دفعات البطاقة المستقبلية تقديرية بنسبة 5% من الرصيد المتبقي، وتتغير إذا سددت أكثر من الحد الأدنى.</p>':''}
+        ${isCard(i)?'<p class="note">الدفعات بعد الأولى تمثل الزيادة الشهرية فقط، أما المستحق الحالي فهو مجموع الزيادات غير المسددة. القيمة المؤكدة تُدخل من كشف البنك.</p>':''}
       </details>
       <div class="actions">${settled?'':button('تسجيل سداد',`pay('${i.id}')`,'')}
         ${button('تعديل',`editItem('${i.id}')`)}${button('سجل السداد',`history('${i.id}')`)}
@@ -1351,7 +1432,7 @@ function editItem(iid=''){
     <label>اسم البند</label><input name="name" required value="${esc(i?.name||'')}" placeholder="مثلاً إمكان 1">
     <label>نوع البند</label><select name="type" onchange="toggleItemType()">
       <option value="general" ${!isCard(i)?'selected':''}>التزام عادي</option>
-      <option value="card" ${isCard(i)?'selected':''}>بطاقة ائتمانية (5% بعد الدفعة الأولى)</option>
+      <option value="card" ${isCard(i)?'selected':''}>بطاقة ائتمانية (ترحيل المتأخر + 5%)</option>
     </select>
     <label>القيمة الإجمالية للبند</label>
     <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${i?.amount||''}">
@@ -1359,13 +1440,13 @@ function editItem(iid=''){
     <div id="cardFields" ${!isCard(i)?'hidden':''}>
       <h3>الدفعة الأولى للبطاقة</h3>
       <label>الشهر</label><input name="cardFirstMonth" type="month" value="${i?.schedule?.[0]?.month||localToday().slice(0,7)}">
-      <label>يوم الاستحقاق (اختياري)</label>
-      <input name="cardFirstDay" type="number" inputmode="numeric" min="1" max="31" step="1" value="${i?.schedule?.[0]?.date?.slice(-2)||''}">
+      <label>يوم استحقاق وترحيل البطاقة (الافتراضي 5)</label>
+      <input name="cardFirstDay" type="number" inputmode="numeric" min="1" max="31" step="1" value="${isCard(i)?cardDueDay(i):5}">
       <label>الحد الأدنى للدفعة الأولى</label>
       <input name="cardFirstMinimum" type="number" inputmode="decimal" min="0.01" step="0.01" value="${isCard(i)?i.schedule[0]?.amount??'':''}">
       <label>ربط الدفعة الأولى بخطة (اختياري)</label>
       <select class="plan-select-native" name="cardFirstFundingPlanId">${fundingSelectOptions(i?.schedule?.[0]?.fundingPlanId||'')}</select>
-      <p class="note">بعد الدفعة الأولى، تُحسب دفعات البطاقة تلقائيًا بنسبة 5% شهريًا. تربط كل دفعة لاحقة بخطتها من «عرض الدفعات» بعد حفظ البند.</p>
+      <p class="note">يترحّل الحد الأدنى السابق غير المسدد يوم الاستحقاق وتُضاف إليه 5% تقديريًا من الجزء المتبقي غير المشمول بالحد الأدنى. حدّث مبالغ الكشف الفعلية عند صدورها.</p>
     </div>
     <div id="regularFields" ${isCard(i)?'hidden':''}>
       <h3>الدفعات (اختياري)</h3>
@@ -1442,7 +1523,7 @@ function submitItem(iid){
   const record=old||{id:id()};
   const before=old?{...old}:null;
   const next={planId:old?.planId||'',name:v.name,note:v.note||'',amount:cents(amount),schedule,type,
-    ...(type==='card'?{cardRate:5,installmentFunding:old?.installmentFunding||{},installmentKinds:old?.installmentKinds||{}}:{cardRate:undefined,installmentFunding:{},installmentKinds:{}})};
+    ...(type==='card'?{cardRate:5,cardStatementMinimums:old?.cardStatementMinimums||{},installmentFunding:old?.installmentFunding||{},installmentKinds:old?.installmentKinds||{}}:{cardRate:undefined,cardStatementMinimums:undefined,installmentFunding:{},installmentKinds:{}})};
   Object.assign(record,next);
   if(!old)db.items.push(record);
   const bad=fundingOverdrawn();
@@ -1666,6 +1747,13 @@ function normalizeDataFile(src){
     if(type==='card'&&i.schedule.length!==1)importErr('البطاقة تحتاج دفعة أولى ثابتة واحدة فقط؛ البقية تُحسب تلقائيًا');
     const installmentFunding={};
     const installmentKinds={};
+    const cardStatementMinimums={};
+    if(type==='card')for(const [month,money] of Object.entries(i.cardStatementMinimums||{})){
+      if(!validMonth(month)||month<i.schedule[0].month)importErr('شهر كشف بطاقة غير صالح');
+      const value=moneyField(money,'مبلغ كشف '+month,false);
+      if(value>Number(i.amount)+0.005)importErr('الحد الأدنى المؤكد أكبر من المديونية');
+      cardStatementMinimums[month]=value;
+    }
     for(const [key,value] of Object.entries(i.installmentFunding||{})){
       installmentFunding[fieldId(key,'معرف دفعة البطاقة')]=value?fieldId(value,'خطة الدفعة'):'';
     }
@@ -1674,7 +1762,7 @@ function normalizeDataFile(src){
     }
     return {id:fieldId(i.id,'البند'),planId:i.planId?fieldId(i.planId,'خطة البند'):'',name:textField(i.name,'اسم البند',200),
       installmentFunding,installmentKinds,
-      type, ...(type==='card'?{cardRate:5}:{}),
+      type, ...(type==='card'?{cardRate:5,cardStatementMinimums}:{}),
       note:textField(i.note,'ملاحظة البند'),amount:moneyField(i.amount,'البند '+(n+1),false),
       schedule:i.schedule.map((d,j)=>{
         if(!d||!validMonth(d.month))importErr('شهر الدفعة غير صحيح في البند '+(n+1));
@@ -1824,6 +1912,7 @@ function applyImport(mode){
           const oldSchedule=new Map(old.schedule.map(d=>[d.id,d]));
           const schedule=rec.schedule.map(d=>({...d,fundingPlanId:d.fundingPlanId||oldSchedule.get(d.id)?.fundingPlanId||''}));
           result.items[pos]={...old,name:rec.name,amount:rec.amount,note:rec.note,schedule,type:rec.type,cardRate:rec.cardRate,
+            cardStatementMinimums:{...(old.cardStatementMinimums||{}),...(rec.cardStatementMinimums||{})},
             installmentFunding:{...(old.installmentFunding||{}),...(rec.installmentFunding||{})},
             installmentKinds:{...(old.installmentKinds||{}),...(rec.installmentKinds||{})}};
           updatedItems++;

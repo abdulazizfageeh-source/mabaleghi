@@ -1,4 +1,4 @@
-const CACHE='mabaleghi-v23';
+const CACHE='mabaleghi-v24';
 const ASSETS=['./','./index.html','./manifest.webmanifest','./icon.svg'];
 
 self.addEventListener('install',event=>{
