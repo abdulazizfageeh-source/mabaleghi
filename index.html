@@ -195,9 +195,11 @@ h3{font-size:16px}
 .quick-option{text-align:right;background:#f2f7fa;color:#163b52;padding:16px;border:1px solid #d9e5ed;display:grid;gap:5px}
 .quick-option b{font-size:16px}
 .quick-option small{color:#6d8191;font-size:12px}
-.card-min-summary{background:#f1f6fb;border:1px solid #d7e5f2;border-radius:12px;padding:12px;margin:12px 0}
-.card-min-summary .line{margin:0 0 7px}
-.card-min-summary .note{margin:8px 0}
+.card-min-summary{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;background:#f1f6fb;border-radius:10px;padding:9px 11px;margin:9px 0}
+.card-min-summary .card-min-data{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;min-width:0}
+.card-min-summary .card-min-data>span{color:#536b7f;font-size:13px}
+.card-min-summary .card-min-data>b{font-size:17px;font-variant-numeric:tabular-nums}
+.card-min-summary button{padding:6px 10px;font-size:12px}
 </style>
 </head>
 <body>
@@ -439,10 +441,8 @@ function cardMinimumSummary(item){
   const s=cardMinimumSnapshot(item);
   if(!s)return '';
   return `<div class="card-min-summary">
-    <div class="line"><b>الحد الأدنى الحالي (${monthName(s.month)})</b><b>${money(s.total)}</b></div>
-    <div class="muted">متأخر من الأشهر السابقة: ${money(s.prior)} · استحقاق الشهر: ${money(s.newPart)}</div>
-    <p class="note">${s.confirmed?'وفق مبلغ الكشف المدخل يدويًا':'تقدير تلقائي غير مؤكد من البنك'} · الترحيل يوم ${cardDueDay(item)} من كل شهر، ولا يُحتسب السداد إلا عند تسجيله.</p>
-    <div class="actions">${button('تحديث الحد الأدنى من كشف البنك',`editCardStatement('${item.id}')`,'small secondary')}</div>
+    <div class="card-min-data"><span>الحد الأدنى (${monthName(s.month)})</span><b>${money(s.total)}</b></div>
+    ${button('تحديث',`editCardStatement('${item.id}')`,'small secondary')}
   </div>`;
 }
 function editCardStatement(iid){
@@ -450,12 +450,12 @@ function editCardStatement(iid){
   if(!item||!isCard(item))return;
   const month=cardCycleMonth(item),snap=cardMinimumSnapshot(item);
   show(`<h2>تحديث الحد الأدنى الفعلي</h2>
-    <p class="note">${esc(item.name)} · أدخل إجمالي الحد الأدنى الذي يظهر في كشف البنك. يفصل التطبيق المتأخرات عن الزيادة الجديدة دون تكرار.</p>
+    <div class="muted">${esc(item.name)}</div>
     <form id="f" onsubmit="event.preventDefault();saveCardStatement('${iid}')">
       <label>شهر الكشف</label><input name="month" type="month" required min="${item.schedule[0].month}" value="${month}">
       <label>الحد الأدنى المستحق بالكامل (ريال)</label>
       <input name="minimum" type="number" step="0.01" inputmode="decimal" min="0.01" required value="${item.cardStatementMinimums?.[month]??snap?.total??''}">
-      <p class="note">إذا لم تُدخل مبلغ كشف لشهر لاحق، سيحسب التطبيق تقديرًا بنسبة 5% من الرصيد غير المشمول بالحد الأدنى المتراكم.</p>
+
       <div class="actions"><button type="submit">حفظ مبلغ الكشف</button>${button('إلغاء','dismissModal(event)')}</div>
     </form>`);
 }
@@ -1170,9 +1170,9 @@ function items(){
         <summary class="settled-summary"><span class="settled-title">${esc(i.name)}</span>
           <span class="settled-end"><span class="settled-check" aria-hidden="true">✓</span>مسدد بالكامل<span class="settled-caret" aria-hidden="true">⌄</span></span></summary>
         <div class="settled-body">`:
-        `<div class="line"><div><b>${esc(i.name)}</b><div class="muted">${isCard(i)?'بطاقة ائتمانية · ترحيل الحد الأدنى في يوم الاستحقاق':'التزام عادي'}</div></div>
+        `<div class="line"><div><b>${esc(i.name)}</b>${isCard(i)?'':'<div class="muted">التزام عادي</div>'}</div>
         <span class="tag">${paidFor(i)>0?'جزئي':'غير مسدد'}</span></div>`}
-      ${i.note?`<p class="note">${esc(i.note)}</p>`:''}
+      ${i.note&&!isCard(i)?`<p class="note">${esc(i.note)}</p>`:''}
       ${isCard(i)?cardMinimumSummary(i):''}
       ${p?`<p class="note">مسدد من هذه الخطة: <b>${money(sumFromPlan)}</b> · دفعات مربوطة: ${itemSchedule(i).filter(d=>linkedPlanId(i,d)===p.id).length}</p>`:''}
       <div class="grid"><div class="stat"><span class="muted">قيمة البند</span><b>${money(i.amount)}</b></div>
@@ -1204,7 +1204,7 @@ function items(){
               <div class="paid-installment-body">${body}${paymentDetails}<div class="actions">${button('سجل السداد',`history('${i.id}')`,'small secondary')}</div></div>
             </details>`;
         }).join('')||'<p class="note">لا توجد دفعات. اضغط تعديل لإضافتها.</p>':''}
-        ${isCard(i)?'<p class="note">الدفعات بعد الأولى تمثل الزيادة الشهرية فقط، أما المستحق الحالي فهو مجموع الزيادات غير المسددة. القيمة المؤكدة تُدخل من كشف البنك.</p>':''}
+
       </details>
       <div class="actions">${settled?'':button('تسجيل سداد',`pay('${i.id}')`,'')}
         ${button('تعديل',`editItem('${i.id}')`)}${button('سجل السداد',`history('${i.id}')`)}
@@ -1432,7 +1432,7 @@ function editItem(iid=''){
     <label>اسم البند</label><input name="name" required value="${esc(i?.name||'')}" placeholder="مثلاً إمكان 1">
     <label>نوع البند</label><select name="type" onchange="toggleItemType()">
       <option value="general" ${!isCard(i)?'selected':''}>التزام عادي</option>
-      <option value="card" ${isCard(i)?'selected':''}>بطاقة ائتمانية (ترحيل المتأخر + 5%)</option>
+      <option value="card" ${isCard(i)?'selected':''}>بطاقة ائتمانية</option>
     </select>
     <label>القيمة الإجمالية للبند</label>
     <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${i?.amount||''}">
@@ -1446,7 +1446,7 @@ function editItem(iid=''){
       <input name="cardFirstMinimum" type="number" inputmode="decimal" min="0.01" step="0.01" value="${isCard(i)?i.schedule[0]?.amount??'':''}">
       <label>ربط الدفعة الأولى بخطة (اختياري)</label>
       <select class="plan-select-native" name="cardFirstFundingPlanId">${fundingSelectOptions(i?.schedule?.[0]?.fundingPlanId||'')}</select>
-      <p class="note">يترحّل الحد الأدنى السابق غير المسدد يوم الاستحقاق وتُضاف إليه 5% تقديريًا من الجزء المتبقي غير المشمول بالحد الأدنى. حدّث مبالغ الكشف الفعلية عند صدورها.</p>
+
     </div>
     <div id="regularFields" ${isCard(i)?'hidden':''}>
       <h3>الدفعات (اختياري)</h3>
